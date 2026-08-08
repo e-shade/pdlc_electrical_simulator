@@ -48,8 +48,16 @@ with st.sidebar:
 
     configured_busbars = []
     for i, bb in enumerate(st.session_state.busbars):
-        # Render widgets first to capture current live state
-        with st.expander(f"Busbar #{i+1}", expanded=True):
+        current_signal = st.session_state.get(f"sig_{i}", bb['signal'])
+        current_layer = st.session_state.get(f"lay_{i}", bb['layer'])
+
+        with st.expander(f"Busbar #{i+1} ({current_layer})", expanded=True):
+            # Render clear color-coded legend description inside the expander
+            if current_signal == 'Positive (+)':
+                st.markdown(":red[**● Signal: Positive (+) [Red Wireframe]**]")
+            else:
+                st.markdown(":blue[**● Signal: Negative (-) [Blue Wireframe]**]")
+
             col_x1, col_x2 = st.columns(2)
             x_start = col_x1.number_input(f"X start (m) #{i+1}", 0.0, film_w, float(bb['x_start']), step=0.05, key=f"x1_{i}")
             x_end = col_x2.number_input(f"X end (m) #{i+1}", 0.0, film_w, float(bb['x_end']), step=0.05, key=f"x2_{i}")
@@ -59,8 +67,8 @@ with st.sidebar:
             y_end = col_y2.number_input(f"Y end (m) #{i+1}", 0.0, film_l, float(bb['y_end']), step=0.05, key=f"y2_{i}")
             
             col_l, col_s = st.columns(2)
-            layer = col_l.selectbox(f"Layer #{i+1}", ["Top ITO", "Bottom ITO"], index=0 if bb['layer']=='Top ITO' else 1, key=f"lay_{i}")
-            signal = col_s.selectbox(f"Signal #{i+1}", ["Positive (+)", "Negative (-)"], index=0 if bb['signal']=='Positive (+)' else 1, key=f"sig_{i}")
+            layer = col_l.selectbox(f"Layer #{i+1}", ["Top ITO", "Bottom ITO"], index=0 if current_layer=='Top ITO' else 1, key=f"lay_{i}")
+            signal = col_s.selectbox(f"Signal #{i+1}", ["Positive (+)", "Negative (-)"], index=0 if current_signal=='Positive (+)' else 1, key=f"sig_{i}")
             
             configured_busbars.append({
                 'x_min': min(x_start, x_end), 'x_max': max(x_start, x_end),
@@ -107,7 +115,6 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap
                 bot_vals[iy_min:iy_max+1, ix_min:ix_max+1] = val
                 has_bot = True
                 
-        # If only one layer is populated, ground the opposite layer to serve as reference plane
         if has_top and not has_bot:
             bot_mask[:, :] = True
             bot_vals[:, :] = 0.0

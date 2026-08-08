@@ -19,8 +19,8 @@ st.caption("Coupled top/bottom ITO layer finite-difference solver with live resi
 # --- SIDEBAR GUI ---
 with st.sidebar:
     st.header("1. Film Geometry")
-    film_w_cm = st.slider("Width (cm)", 10.0, 300.0, 100.0, step=5.0)
-    film_l_cm = st.slider("Length (cm)", 10.0, 300.0, 100.0, step=5.0)
+    film_w_cm = st.slider("Width (cm)", 10.0, 300.0, 60.0, step=5.0)
+    film_l_cm = st.slider("Length (cm)", 10.0, 300.0, 60.0, step=5.0)
     
     film_w = film_w_cm / 100.0
     film_l = film_l_cm / 100.0
@@ -37,8 +37,8 @@ with st.sidebar:
     st.header("3. Multi-Busbar Configuration")
     if 'busbars' not in st.session_state:
         st.session_state.busbars = [
-            {'x_start': 0.0, 'x_end': 100.0, 'y_start': 0.0, 'y_end': 50.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
-            {'x_start': 0.0, 'x_end': 100.0, 'y_start': 50.0, 'y_end': 100.0, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
+            {'x_start': 0.0, 'x_end': 60.0, 'y_start': 0.0, 'y_end': 30.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
+            {'x_start': 0.0, 'x_end': 60.0, 'y_start': 30.0, 'y_end': 60.0, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
         ]
 
     col_add, col_rem = st.columns(2)
@@ -60,13 +60,19 @@ with st.sidebar:
             else:
                 st.markdown(":blue[**● Signal: Negative (-) [Blue Wireframe]**]")
 
+            # Safely clamp stored bounds to prevent out-of-bounds errors when resizing film dimensions
+            safe_x1 = min(float(bb['x_start']), film_w_cm)
+            safe_x2 = min(float(bb['x_end']), film_w_cm)
+            safe_y1 = min(float(bb['y_start']), film_l_cm)
+            safe_y2 = min(float(bb['y_end']), film_l_cm)
+
             col_x1, col_x2 = st.columns(2)
-            x_start_cm = col_x1.number_input(f"X start (cm) #{i+1}", 0.0, film_w_cm, float(bb['x_start']), step=1.0, key=f"x1_{i}")
-            x_end_cm = col_x2.number_input(f"X end (cm) #{i+1}", 0.0, film_w_cm, float(bb['x_end']), step=1.0, key=f"x2_{i}")
+            x_start_cm = col_x1.number_input(f"X start (cm) #{i+1}", 0.0, film_w_cm, safe_x1, step=1.0, key=f"x1_{i}")
+            x_end_cm = col_x2.number_input(f"X end (cm) #{i+1}", 0.0, film_w_cm, safe_x2, step=1.0, key=f"x2_{i}")
             
             col_y1, col_y2 = st.columns(2)
-            y_start_cm = col_y1.number_input(f"Y start (cm) #{i+1}", 0.0, film_l_cm, float(bb['y_start']), step=1.0, key=f"y1_{i}")
-            y_end_cm = col_y2.number_input(f"Y end (cm) #{i+1}", 0.0, film_l_cm, float(bb['y_end']), step=1.0, key=f"y2_{i}")
+            y_start_cm = col_y1.number_input(f"Y start (cm) #{i+1}", 0.0, film_l_cm, safe_y1, step=1.0, key=f"y1_{i}")
+            y_end_cm = col_y2.number_input(f"Y end (cm) #{i+1}", 0.0, film_l_cm, safe_y2, step=1.0, key=f"y2_{i}")
             
             col_l, col_s = st.columns(2)
             layer = col_l.selectbox(f"Layer #{i+1}", ["Top ITO", "Bottom ITO"], index=0 if current_layer=='Top ITO' else 1, key=f"lay_{i}")
@@ -176,7 +182,6 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
     
     base_pf = 0.083 + (0.441 * total_area)
     
-    # Directly responsive resistance factor
     resistance_scaling = 30.0 / max(R_sq, 5.0)
     effective_pf = np.clip(base_pf * (0.5 + 0.5 * resistance_scaling), 0.05, 0.85)
     

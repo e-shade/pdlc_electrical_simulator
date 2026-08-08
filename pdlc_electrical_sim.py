@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with AC RMS voltage metrics and area-scaled power estimation.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with AC RMS voltage metrics and SION-calibrated power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -164,23 +164,23 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- AREA-INTEGRATED POWER CALCULATIONS ---
+    # --- SION-CALIBRATED POWER CALCULATIONS ---
     total_area = width * length
     total_capacitance = C_A * total_area
     f_driver = 60.0  # AC driving frequency
     
-    # Reactive power from capacitive displacement current
-    avg_rms_v = np.mean(V_eff_steady)
-    reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * (avg_rms_v / max(v_rms_val, 1e-6)) * v_rms_val
-    reactive_power_va = v_rms_val * reactive_current_rms
+    # Apparent power (VA) based on capacitive displacement current
+    reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * v_rms_val
+    apparent_power_va = v_rms_val * reactive_current_rms
     
-    # Active resistive loss integration across the distributed sheet resistance grid
-    grad_y, grad_x = np.gradient(steady_t, dy, dx)
-    local_dissipation = (grad_x**2 + grad_y**2) / R_sq
-    active_power_w = np.sum(local_dissipation) * (dx * dy)
+    # Empirical Power Factor scaling mapped from SION measurement dataset
+    empirical_pf = min(0.524, 0.08 + (0.444 * total_area))
     
-    # Total DC supply power draw including driver overhead (~10%)
-    dc_supply_power_w = active_power_w + (reactive_power_va * 0.10)
+    # Real active power consumption: P = VA * PF
+    active_power_w = apparent_power_va * empirical_pf
+    
+    # Total power drawn from DC supply including driver conversion overhead (~10%)
+    dc_supply_power_w = active_power_w + (apparent_power_va * 0.10)
 
     return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, dc_supply_power_w
 

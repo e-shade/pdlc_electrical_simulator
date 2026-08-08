@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with geometric bus bar ESR scaling.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with robust boundary safeguarding and ESR modeling.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -25,13 +25,13 @@ with st.sidebar:
     film_w = film_w_cm / 100.0
     film_l = film_l_cm / 100.0
 
-    st.header("2. Electrical Properties")
+    st.header("2. Electrical & Bus Bar Properties")
     r_sq = st.number_input("ITO Sheet Resistance (Ω/sq)", min_value=10.0, max_value=2000.0, value=70.0, step=10.0)
     c_area_uf = st.number_input("Capacitance (µF/m²)", min_value=0.1, max_value=100.0, value=11.0, step=0.5)
     c_area = c_area_uf * 1e-6
     
-    # Replaced ESR input box with a linear scaling factor coefficient (e.g., Ω per meter of bus bar length)
-    esr_linear_coeff = st.number_input("Bus Bar ESR Linear Factor (Ω/m)", min_value=0.0, max_value=50.0, value=5.0, step=0.5)
+    busbar_tape_width_cm = st.number_input("Bus Bar Tape Width (cm)", min_value=0.2, max_value=10.0, value=1.0, step=0.1)
+    busbar_sheet_res = st.number_input("Bus Bar Material Sheet Resistance (mΩ/sq)", min_value=0.1, max_value=100.0, value=5.0, step=0.5) * 1e-3
     
     v_rms = st.slider("Applied AC Voltage (RMS)", 10.0, 150.0, 48.0, step=2.0)
     v_peak = v_rms * np.sqrt(2)
@@ -40,14 +40,14 @@ with st.sidebar:
     st.header("3. Multi-Busbar Configuration")
     if 'busbars' not in st.session_state:
         st.session_state.busbars = [
-            {'x_start': 0.0, 'x_end': film_w_cm, 'y_start': 0.0, 'y_end': film_l_cm / 2.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
-            {'x_start': 0.0, 'x_end': film_w_cm, 'y_start': film_l_cm / 2.0, 'y_end': film_l_cm, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
+            {'side': 'Top', 'start_pos': 0.0, 'length': film_w_cm, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
+            {'side': 'Bottom', 'start_pos': 0.0, 'length': film_w_cm, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
         ]
 
     col_add, col_rem = st.columns(2)
     if col_add.button("➕ Add Busbar"):
         st.session_state.busbars.append(
-            {'x_start': 0.0, 'x_end': film_w_cm, 'y_start': 0.0, 'y_end': film_l_cm / 2.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'}
+            {'side': 'Left', 'start_pos': 0.0, 'length': film_l_cm / 2.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'}
         )
     if col_rem.button("🗑️ Remove Last") and len(st.session_state.busbars) > 1:
         st.session_state.busbars.pop()
@@ -56,6 +56,7 @@ with st.sidebar:
     for i, bb in enumerate(st.session_state.busbars):
         current_signal = st.session_state.get(f"sig_{i}", bb['signal'])
         current_layer = st.session_state.get(f"lay_{i}", bb['layer'])
+        current_side = st.session_state.get(f"side_{i}", bb['side'])
 
         with st.expander(f"Busbar #{i+1} ({current_layer})", expanded=True):
             if current_signal == 'Positive (+)':
@@ -63,26 +64,49 @@ with st.sidebar:
             else:
                 st.markdown(":blue[**● Signal: Negative (-) [Blue Wireframe]**]")
 
-            safe_x1 = min(float(bb['x_start']), film_w_cm)
-            safe_x2 = min(float(bb['x_end']), film_w_cm)
-            safe_y1 = min(float(bb['y_start']), film_l_cm)
-            safe_y2 = min(float(bb['y_end']), film_l_cm)
-
-            col_x1, col_x2 = st.columns(2)
-            x_start_cm = col_x1.number_input(f"X start (cm) #{i+1}", 0.0, film_w_cm, safe_x1, step=1.0, key=f"x1_{i}")
-            x_end_cm = col_x2.number_input(f"X end (cm) #{i+1}", 0.0, film_w_cm, safe_x2, step=1.0, key=f"x2_{i}")
-            
-            col_y1, col_y2 = st.columns(2)
-            y_start_cm = col_y1.number_input(f"Y start (cm) #{i+1}", 0.0, film_l_cm, safe_y1, step=1.0, key=f"y1_{i}")
-            y_end_cm = col_y2.number_input(f"Y end (cm) #{i+1}", 0.0, film_l_cm, safe_y2, step=1.0, key=f"y2_{i}")
-            
-            col_l, col_s = st.columns(2)
+            col_s, col_l = st.columns(2)
+            side = col_s.selectbox(f"Side #{i+1}", ["Top", "Bottom", "Left", "Right"], index=["Top", "Bottom", "Left", "Right"].index(current_side), key=f"side_{i}")
             layer = col_l.selectbox(f"Layer #{i+1}", ["Top ITO", "Bottom ITO"], index=0 if current_layer=='Top ITO' else 1, key=f"lay_{i}")
-            signal = col_s.selectbox(f"Signal #{i+1}", ["Positive (+)", "Negative (-)"], index=0 if current_signal=='Positive (+)' else 1, key=f"sig_{i}")
+
+            max_edge_len = film_w_cm if side in ["Top", "Bottom"] else film_l_cm
             
+            # --- ROBUST INPUT SAFEGUARDING ---
+            # Automatically clamp start position and length so they never exceed edge bounds
+            safe_start = min(float(bb['start_pos']), max_edge_len - 0.1)
+            max_allowed_len = max(0.1, max_edge_len - safe_start)
+            safe_len = min(float(bb['length']), max_allowed_len)
+
+            col_p1, col_p2 = st.columns(2)
+            start_pos = col_p1.number_input(f"Start Pos (cm) #{i+1}", 0.0, max(0.0, max_edge_len - 0.1), safe_start, step=1.0, key=f"start_{i}")
+            
+            # Dynamically restrict the length maximum based on the chosen start position
+            remaining_max_len = max(0.1, max_edge_len - start_pos)
+            length_val = col_p2.number_input(f"Length (cm) #{i+1}", 0.1, remaining_max_len, min(safe_len, remaining_max_len), step=1.0, key=f"len_{i}")
+            
+            _, col_sig = st.columns(2)
+            signal = col_sig.selectbox(f"Signal #{i+1}", ["Positive (+)", "Negative (-)"], index=0 if current_signal=='Positive (+)' else 1, key=f"sig_{i}")
+
+            # Translate Side + Start/Length into spatial bounding box coordinates (in meters)
+            tape_w_m = busbar_tape_width_cm / 100.0
+            start_m = start_pos / 100.0
+            end_m = (start_pos + length_val) / 100.0
+
+            if side == 'Top':
+                x_min, x_max = start_m, end_m
+                y_min, y_max = 0.0, tape_w_m
+            elif side == 'Bottom':
+                x_min, x_max = start_m, end_m
+                y_min, y_max = film_l - tape_w_m, film_l
+            elif side == 'Left':
+                x_min, x_max = 0.0, tape_w_m
+                y_min, y_max = start_m, end_m
+            else:  # Right
+                x_min, x_max = film_w - tape_w_m, film_w
+                y_min, y_max = start_m, end_m
+
             configured_busbars.append({
-                'x_min': min(x_start_cm, x_end_cm) / 100.0, 'x_max': max(x_start_cm, x_end_cm) / 100.0,
-                'y_min': min(y_start_cm, y_end_cm) / 100.0, 'y_max': max(y_start_cm, y_end_cm) / 100.0,
+                'side': side, 'start_pos': start_pos, 'length': length_val,
+                'x_min': x_min, 'x_max': x_max, 'y_min': y_min, 'y_max': y_max,
                 'layer': layer, 'signal': signal
             })
 
@@ -92,7 +116,7 @@ with st.sidebar:
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
 # --- COUPLED FDTD SOLVER ---
-def simulate_all_profiles(C_A, R_sq, esr_coeff, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
+def simulate_all_profiles(C_A, R_sq, tape_w_cm, copper_r_sq, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
     
@@ -174,7 +198,7 @@ def simulate_all_profiles(C_A, R_sq, esr_coeff, width, length, busbars, V_peak, 
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- GEOMETRICALLY SCALED BUS BAR ESR POWER CALCULATIONS ---
+    # --- TAPE-WIDTH DEPENDENT ESR POWER CALCULATIONS ---
     total_area = width * length
     f_driver = 60.0  # AC driving frequency
     
@@ -187,11 +211,14 @@ def simulate_all_profiles(C_A, R_sq, esr_coeff, width, length, busbars, V_peak, 
     effective_pf = np.clip(base_pf * (0.5 + 0.5 * resistance_scaling), 0.05, 0.85)
     core_active_power = apparent_power_va * effective_pf
     
-    # Dynamically compute total bus bar length from configured dimensions and calculate ESR linearly
-    total_busbar_length = sum((bb['x_max'] - bb['x_min']) + (bb['y_max'] - bb['y_min']) for bb in busbars)
-    calculated_esr = esr_coeff * total_busbar_length
-    
-    busbar_esr_power = (reactive_current_rms ** 2) * calculated_esr
+    tape_w_m = tape_w_cm / 100.0
+    total_busbar_esr = 0.0
+    for bb in busbars:
+        bb_length = max((bb['x_max'] - bb['x_min']), (bb['y_max'] - bb['y_min']))
+        if tape_w_m > 0:
+            total_busbar_esr += copper_r_sq * (bb_length / tape_w_m)
+            
+    busbar_esr_power = (reactive_current_rms ** 2) * total_busbar_esr
     active_power_w = core_active_power + busbar_esr_power
 
     return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, active_power_w
@@ -199,7 +226,7 @@ def simulate_all_profiles(C_A, R_sq, esr_coeff, width, length, busbars, V_peak, 
 # --- EXECUTE ---
 with st.spinner("Solving transient and steady-state fields..."):
     V_on, V_off, V_steady, total_steps, active_p_w, dc_power_w = simulate_all_profiles(
-        c_area, r_sq, esr_linear_coeff, film_w, film_l, configured_busbars, v_peak, v_rms, t_snapshot, resolution, resolution
+        c_area, r_sq, busbar_tape_width_cm, busbar_sheet_res, film_w, film_l, configured_busbars, v_peak, v_rms, t_snapshot, resolution, resolution
     )
 
 # --- PLOTTING ---

@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with steady-state mapping and power estimation.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with AC RMS voltage metrics and DC supply power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -29,7 +29,7 @@ with st.sidebar:
     
     v_rms = st.slider("Applied AC Voltage (RMS)", 10.0, 150.0, 48.0, step=2.0)
     v_peak = v_rms * np.sqrt(2)
-    st.caption(f"Equivalent Peak Voltage ($V_p$): **{v_peak:.1f} V**")
+    st.caption(f"Peak Voltage ($V_p$): **{v_peak:.1f} V**")
 
     st.header("3. Multi-Busbar Configuration")
     if 'busbars' not in st.session_state:
@@ -82,7 +82,7 @@ with st.sidebar:
 
 # --- COUPLED FDTD SOLVER ---
 @st.cache_data
-def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, t_snap, nx, ny):
+def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
     
@@ -155,30 +155,41 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, t_snap, nx,
             V_t, V_b = V_t_new, V_b_new
         return V_t, V_b
 
-    # 1. Turn-ON Transient
+    # 1. Turn-ON Transient (Converted to RMS scale: Peak / sqrt(2))
     final_t_on, final_b_on = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals, steps)
-    V_eff_on = np.abs(final_t_on - final_b_on)
+    V_eff_on = np.abs(final_t_on - final_b_on) / np.sqrt(2)
 
-    # 2. Turn-OFF Transient
+    # 2. Turn-OFF Transient (Converted to RMS scale)
     steady_t, steady_b = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals, int(5000e-6 / dt))
     final_t_off, final_b_off = run_fdtd(steady_t, steady_b, np.zeros((ny, nx)), np.zeros((ny, nx)), steps)
-    V_eff_off = np.abs(final_t_off - final_b_off)
+    V_eff_off = np.abs(final_t_off - final_b_off) / np.sqrt(2)
 
-    # 3. Steady-State ON State Map
-    V_eff_steady = np.abs(steady_t - steady_b)
+    # 3. Steady-State ON State Map (Converted to RMS scale)
+    V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # Power estimation: Active power loss in resistive ITO layers + Capacitive charging current estimate
-    # P_active = V_rms^2 / R_eff approximation
+    # Power estimation from DC supply: P_dc ~ P_active (ITO losses) + P_ capacitive reactive draw
+    # Assuming typical driver efficiency or estimating active resistive dissipation + charging overhead
     total_film_area = width * length
     approx_resistance = R_sq * (length / width if width > 0 else 1.0)
-    active_power_w = (v_rms ** 2) / max(approx_resistance, 1.0)
+    active_power_w = (v_rms_val ** 2) / max(approx_resistance, 1.0)
+    
+    # Add reactive power component estimation for AC drivers drawing from DC supply (approx power factor consideration)
+    # Total apparent power S = V_rms * I_rms, where I_rms = V_rms * omega * C_total
+    # Assuming standard 60Hz driving frequency for smart glass power supplies
+    f_driver = 60.0
+    c_total = C_A * total_film_area
+    reactive_current_rms = v_rms_val * (2 * np.pi * f_driver * c_total)
+    apparent_power_va = v_rms_val * reactive_current_rms
+    
+    # Total DC supply power draw estimated considering driver conversion overhead and reactive load
+    dc_supply_power_w = active_power_w + (apparent_power_va * 0.15) # 15% estimated driver loss/overhead factor
 
-    return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w
+    return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, dc_supply_power_w
 
 # --- EXECUTE ---
 with st.spinner("Solving transient and steady-state fields..."):
-    V_on, V_off, V_steady, total_steps, power_w = simulate_all_profiles(
-        c_area, r_sq, film_w, film_l, configured_busbars, v_peak, t_snapshot, resolution, resolution
+    V_on, V_off, V_steady, total_steps, active_p_w, dc_power_w = simulate_all_profiles(
+        c_area, r_sq, film_w, film_l, configured_busbars, v_peak, v_rms, t_snapshot, resolution, resolution
     )
 
 # --- PLOTTING ---
@@ -189,7 +200,7 @@ def add_busbar_traces(fig):
     for i, bb in enumerate(configured_busbars):
         bx = [bb['x_min'], bb['x_max'], bb['x_max'], bb['x_min'], bb['x_min']]
         by = [bb['y_min'], bb['y_min'], bb['y_max'], bb['y_max'], bb['y_min']]
-        bz = [v_peak * 1.05] * 5
+        bz = [v_rms * 1.05] * 5
         color = "red" if bb['signal'] == 'Positive (+)' else "blue"
         fig.add_trace(go.Scatter3d(
             x=bx, y=by, z=bz, mode='lines',
@@ -197,15 +208,16 @@ def add_busbar_traces(fig):
             showlegend=False
         ))
 
-col1, col2, col3 = st.columns(3)
+# Row 1: Transient Maps Side-by-Side
+col1, col2 = st.columns(2)
 
 with col1:
     fig_on = go.Figure(data=[go.Surface(z=V_on, x=x_grid, y=y_grid, colorscale="Inferno")])
     add_busbar_traces(fig_on)
     fig_on.update_layout(
-        title=f"Turn-ON ({t_snapshot_us} µs)",
+        title=f"Turn-ON Differential Voltage RMS ({t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
     )
     st.plotly_chart(fig_on, use_container_width=True)
 
@@ -213,27 +225,29 @@ with col2:
     fig_off = go.Figure(data=[go.Surface(z=V_off, x=x_grid, y=y_grid, colorscale="Viridis")])
     add_busbar_traces(fig_off)
     fig_off.update_layout(
-        title=f"Turn-OFF ({t_snapshot_us} µs)",
+        title=f"Turn-OFF Differential Voltage RMS ({t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
     )
     st.plotly_chart(fig_off, use_container_width=True)
 
-with col3:
-    fig_steady = go.Figure(data=[go.Surface(z=V_steady, x=x_grid, y=y_grid, colorscale="Plasma")])
-    add_busbar_traces(fig_steady)
-    fig_steady.update_layout(
-        title="Steady-State ON State",
-        autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
-    )
-    st.plotly_chart(fig_steady, use_container_width=True)
+# Row 2: Steady-State Map Centered/Below
+st.markdown("---")
+st.subheader("Steady-State ON State Distribution")
+fig_steady = go.Figure(data=[go.Surface(z=V_steady, x=x_grid, y=y_grid, colorscale="Plasma")])
+add_busbar_traces(fig_steady)
+fig_steady.update_layout(
+    title="Steady-State ON State Differential Voltage RMS",
+    autosize=True, margin=dict(l=0, r=0, b=0, t=40),
+    scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
+)
+st.plotly_chart(fig_steady, use_container_width=True)
 
 # --- METRICS ---
 st.divider()
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Active Busbars", len(configured_busbars))
-m2.metric("Center Turn-ON Voltage", f"{V_on[resolution//2, resolution//2]:.2f} V")
-m3.metric("Center Turn-OFF Voltage", f"{V_off[resolution//2, resolution//2]:.2f} V")
-m4.metric("Steady-State Center Voltage", f"{V_steady[resolution//2, resolution//2]:.2f} V")
-m5.metric("Est. Active Power (RMS)", f"{power_w:.3f} W")
+m2.metric("Center Turn-ON (RMS)", f"{V_on[resolution//2, resolution//2]:.2f} V")
+m3.metric("Center Turn-OFF (RMS)", f"{V_off[resolution//2, resolution//2]:.2f} V")
+m4.metric("Steady-State Center (RMS)", f"{V_steady[resolution//2, resolution//2]:.2f} V")
+m5.metric("Est. DC Supply Power Draw", f"{dc_power_w:.3f} W")

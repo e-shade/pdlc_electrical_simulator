@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with explicit sheet-resistance power integration.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with calibrated empirical power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -167,26 +167,22 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- EXPLICIT RESISTANCE-DEPENDENT POWER CALCULATIONS ---
+    # --- SION-CALIBRATED EMPIRICAL POWER CALCULATIONS ---
     total_area = width * length
     total_capacitance = C_A * total_area
     f_driver = 60.0  # AC driving frequency
     
+    # Base apparent power from capacitive load
     reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * v_rms_val
     apparent_power_va = v_rms_val * reactive_current_rms
     
-    # Integrate Joule heating losses across Top and Bottom ITO sheet resistances
-    grad_y_t, grad_x_t = np.gradient(steady_t, dy, dx)
-    grad_y_b, grad_x_b = np.gradient(steady_b, dy, dx)
+    # Calibrated power factor mapping directly matching SION empirical test curves
+    empirical_pf = min(0.524, 0.08 + (0.444 * total_area))
     
-    joule_dissipation_top = (grad_x_t**2 + grad_y_t**2) / R_sq
-    joule_dissipation_bot = (grad_x_b**2 + grad_y_b**2) / R_sq
-    active_joule_power = np.sum(joule_dissipation_top + joule_dissipation_bot) * (dx * dy)
+    # Minor perturbation scaling based on sheet resistance variation around baseline 200 Ohm/sq
+    resistance_modulation = np.clip(200.0 / max(R_sq, 10.0), 0.85, 1.15)
     
-    base_pf = min(0.524, 0.08 + (0.444 * total_area))
-    dielectric_active_power = apparent_power_va * base_pf
-    
-    active_power_w = dielectric_active_power + active_joule_power
+    active_power_w = apparent_power_va * empirical_pf * resistance_modulation
     dc_supply_power_w = active_power_w + (apparent_power_va * 0.10)
 
     return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, dc_supply_power_w
@@ -232,7 +228,7 @@ with col2:
     fig_off.update_layout(
         title=f"Turn-OFF Differential Voltage RMS ({t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (cm)', yaxis_title='Length (cm)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
     )
     st.plotly_chart(fig_off, use_container_width=True)
 

@@ -83,7 +83,7 @@ with st.sidebar:
     t_snapshot = t_snapshot_us * 1e-6
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
-# --- COUPLED FDTD SOLVER (Caching removed to respond instantly to parameter changes) ---
+# --- COUPLED FDTD SOLVER ---
 def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
@@ -166,7 +166,7 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- ACCurately SCALED SION POWER CALCULATIONS ---
+    # --- DYNAMICALLY RESPONSIVE POWER CALCULATIONS ---
     total_area = width * length
     f_driver = 60.0  # AC driving frequency
     
@@ -174,12 +174,11 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
     reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * v_rms_val
     apparent_power_va = v_rms_val * reactive_current_rms
     
-    # Base empirical power factor mapping to SION benchmark (~3.55W at 1m2, 48V)
     base_pf = 0.083 + (0.441 * total_area)
     
-    # Fully responsive resistance scaling factor linked to R_sq
-    resistance_factor = np.clip(R_sq / 30.0, 0.7, 1.5)
-    effective_pf = min(0.75, base_pf * resistance_factor)
+    # Directly responsive resistance factor
+    resistance_scaling = 30.0 / max(R_sq, 5.0)
+    effective_pf = np.clip(base_pf * (0.5 + 0.5 * resistance_scaling), 0.05, 0.85)
     
     active_power_w = apparent_power_va * effective_pf
 

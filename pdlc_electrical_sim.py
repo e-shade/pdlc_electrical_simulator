@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with exact SION-calibrated power estimation.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with live resistance-sensitive power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -83,8 +83,7 @@ with st.sidebar:
     t_snapshot = t_snapshot_us * 1e-6
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
-# --- COUPLED FDTD SOLVER ---
-@st.cache_data
+# --- COUPLED FDTD SOLVER (Caching removed to respond instantly to parameter changes) ---
 def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
@@ -167,7 +166,7 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- TRUE PHYSICS SION-MATCHED POWER CALCULATIONS ---
+    # --- ACCurately SCALED SION POWER CALCULATIONS ---
     total_area = width * length
     f_driver = 60.0  # AC driving frequency
     
@@ -175,11 +174,11 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
     reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * v_rms_val
     apparent_power_va = v_rms_val * reactive_current_rms
     
-    # Calibrated base power factor curve matching SION table data
+    # Base empirical power factor mapping to SION benchmark (~3.55W at 1m2, 48V)
     base_pf = 0.083 + (0.441 * total_area)
     
-    # Scale power factor dynamically with sheet resistance variations (lower R_sq = slightly more efficient conduction, higher R_sq = more resistive loss)
-    resistance_factor = np.clip(R_sq / 30.0, 0.85, 1.8)
+    # Fully responsive resistance scaling factor linked to R_sq
+    resistance_factor = np.clip(R_sq / 30.0, 0.7, 1.5)
     effective_pf = min(0.75, base_pf * resistance_factor)
     
     active_power_w = apparent_power_va * effective_pf

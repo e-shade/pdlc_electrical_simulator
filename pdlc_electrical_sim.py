@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with bus bar series resistance (ESR) modeling.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with geometric bus bar ESR scaling.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -30,8 +30,8 @@ with st.sidebar:
     c_area_uf = st.number_input("Capacitance (µF/m²)", min_value=0.1, max_value=100.0, value=11.0, step=0.5)
     c_area = c_area_uf * 1e-6
     
-    # New Bus Bar ESR input parameter
-    busbar_esr = st.number_input("Bus Bar ESR / Contact Resistance (Ω)", min_value=0.0, max_value=50.0, value=2.5, step=0.5)
+    # Replaced ESR input box with a linear scaling factor coefficient (e.g., Ω per meter of bus bar length)
+    esr_linear_coeff = st.number_input("Bus Bar ESR Linear Factor (Ω/m)", min_value=0.0, max_value=50.0, value=5.0, step=0.5)
     
     v_rms = st.slider("Applied AC Voltage (RMS)", 10.0, 150.0, 48.0, step=2.0)
     v_peak = v_rms * np.sqrt(2)
@@ -92,7 +92,7 @@ with st.sidebar:
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
 # --- COUPLED FDTD SOLVER ---
-def simulate_all_profiles(C_A, R_sq, esr, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
+def simulate_all_profiles(C_A, R_sq, esr_coeff, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
     
@@ -174,7 +174,7 @@ def simulate_all_profiles(C_A, R_sq, esr, width, length, busbars, V_peak, v_rms_
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- POWER CALCULATIONS INCLUDING BUS BAR ESR ---
+    # --- GEOMETRICALLY SCALED BUS BAR ESR POWER CALCULATIONS ---
     total_area = width * length
     f_driver = 60.0  # AC driving frequency
     
@@ -185,13 +185,13 @@ def simulate_all_profiles(C_A, R_sq, esr, width, length, busbars, V_peak, v_rms_
     base_pf = 0.083 + (0.441 * total_area)
     resistance_scaling = 30.0 / max(R_sq, 5.0)
     effective_pf = np.clip(base_pf * (0.5 + 0.5 * resistance_scaling), 0.05, 0.85)
-    
-    # Core dielectric/ITO active power
     core_active_power = apparent_power_va * effective_pf
     
-    # Additional I^2 * R Joule heating power dissipation across the Bus Bar ESR / contact resistance
-    busbar_esr_power = (reactive_current_rms ** 2) * esr
+    # Dynamically compute total bus bar length from configured dimensions and calculate ESR linearly
+    total_busbar_length = sum((bb['x_max'] - bb['x_min']) + (bb['y_max'] - bb['y_min']) for bb in busbars)
+    calculated_esr = esr_coeff * total_busbar_length
     
+    busbar_esr_power = (reactive_current_rms ** 2) * calculated_esr
     active_power_w = core_active_power + busbar_esr_power
 
     return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, active_power_w
@@ -199,7 +199,7 @@ def simulate_all_profiles(C_A, R_sq, esr, width, length, busbars, V_peak, v_rms_
 # --- EXECUTE ---
 with st.spinner("Solving transient and steady-state fields..."):
     V_on, V_off, V_steady, total_steps, active_p_w, dc_power_w = simulate_all_profiles(
-        c_area, r_sq, busbar_esr, film_w, film_l, configured_busbars, v_peak, v_rms, t_snapshot, resolution, resolution
+        c_area, r_sq, esr_linear_coeff, film_w, film_l, configured_busbars, v_peak, v_rms, t_snapshot, resolution, resolution
     )
 
 # --- PLOTTING ---

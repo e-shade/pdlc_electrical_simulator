@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with accurate area-scaled power estimation.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with AC RMS voltage metrics and area-scaled power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -164,20 +164,22 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- CORRECTED AREA-SCALED POWER CALCULATIONS ---
+    # --- AREA-INTEGRATED POWER CALCULATIONS ---
     total_area = width * length
     total_capacitance = C_A * total_area
-    f_driver = 60.0  # Standard AC drive frequency
+    f_driver = 60.0  # AC driving frequency
     
-    # 1. Effective resistance scales directly with film geometry
-    effective_resistance = R_sq * (length / width) if width > 0 else R_sq
-    active_power_w = (v_rms_val ** 2) / max(effective_resistance, 1.0)
-    
-    # 2. Capacitive reactive power current draw scales directly with total area capacitance
-    reactive_current_rms = v_rms_val * (2 * np.pi * f_driver * total_capacitance)
+    # Reactive power from capacitive displacement current
+    avg_rms_v = np.mean(V_eff_steady)
+    reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * (avg_rms_v / max(v_rms_val, 1e-6)) * v_rms_val
     reactive_power_va = v_rms_val * reactive_current_rms
     
-    # Total power drawn from the DC supply (incorporating driver inversion and capacitive charging losses)
+    # Active resistive loss integration across the distributed sheet resistance grid
+    grad_y, grad_x = np.gradient(steady_t, dy, dx)
+    local_dissipation = (grad_x**2 + grad_y**2) / R_sq
+    active_power_w = np.sum(local_dissipation) * (dx * dy)
+    
+    # Total DC supply power draw including driver overhead (~10%)
     dc_supply_power_w = active_power_w + (reactive_power_va * 0.10)
 
     return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, dc_supply_power_w
@@ -204,6 +206,7 @@ def add_busbar_traces(fig):
             showlegend=False
         ))
 
+# Row 1: Transient Maps Side-by-Side
 col1, col2 = st.columns(2)
 
 with col1:
@@ -226,6 +229,7 @@ with col2:
     )
     st.plotly_chart(fig_off, use_container_width=True)
 
+# Row 2: Steady-State Map Below
 st.markdown("---")
 st.subheader("Steady-State ON State Distribution")
 fig_steady = go.Figure(data=[go.Surface(z=V_steady, x=x_grid, y=y_grid, colorscale="Plasma")])

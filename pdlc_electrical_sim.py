@@ -26,7 +26,11 @@ with st.sidebar:
     r_sq = st.number_input("ITO Sheet Resistance (Ω/sq)", min_value=10.0, max_value=2000.0, value=200.0, step=10.0)
     c_area_uf = st.number_input("Capacitance (µF/m²)", min_value=0.1, max_value=100.0, value=11.0, step=0.5)
     c_area = c_area_uf * 1e-6
-    v_drive = st.slider("Driving Voltage Magnitude (V)", 10.0, 150.0, 60.0, step=5.0)
+    
+    # RMS Voltage Control Slider (Automatically calculates Peak Amplitude V_p = V_rms * sqrt(2))
+    v_rms = st.slider("Applied AC Voltage (RMS)", 10.0, 150.0, 48.0, step=2.0)
+    v_peak = v_rms * np.sqrt(2)
+    st.caption(f"Equivalent Peak Voltage ($V_p$): **{v_peak:.1f} V**")
 
     st.header("3. Multi-Busbar Configuration")
     if 'busbars' not in st.session_state:
@@ -38,7 +42,7 @@ with st.sidebar:
     col_add, col_rem = st.columns(2)
     if col_add.button("➕ Add Busbar"):
         st.session_state.busbars.append(
-            {'x_start': 0.0, 'x_end': 0.05, 'y_start': 0.0, 'y_end': 0.5, 'layer': 'Top ITO', 'signal': 'Positive (+)'}
+            {'x_start': 0.0, 'x_end': film_w, 'y_start': 0.0, 'y_end': 0.5, 'layer': 'Top ITO', 'signal': 'Positive (+)'}
         )
     if col_rem.button("🗑️ Remove Last") and len(st.session_state.busbars) > 1:
         st.session_state.busbars.pop()
@@ -69,9 +73,9 @@ with st.sidebar:
     t_snapshot = t_snapshot_us * 1e-6
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
-# --- COUPLED FDTD SOLVER FOR TURN-ON & TURN-OFF ---
+# --- CORRECTED COUPLED FDTD SOLVER ---
 @st.cache_data
-def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap, nx, ny):
+def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
     
@@ -79,36 +83,36 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap,
     steps = int(t_snap / dt)
     alpha = dt / (R_sq * C_A * dx**2)
 
-    def get_busbar_masks_and_targets(V_top, V_bot):
-        top_pos_mask, top_val_mask = np.zeros((ny, nx), dtype=bool), np.zeros((ny, nx))
-        bot_pos_mask, bot_val_mask = np.zeros((ny, nx), dtype=bool), np.zeros((ny, nx))
+    def get_busbar_masks_and_targets(ny, nx):
+        top_mask = np.zeros((ny, nx), dtype=bool)
+        top_vals = np.zeros((ny, nx))
+        bot_mask = np.zeros((ny, nx), dtype=bool)
+        bot_vals = np.zeros((ny, nx))
         
-        has_top, has_bot = False, False
         for bb in busbars:
             ix_min = max(0, int(bb['x_min'] / width * (nx - 1)))
             ix_max = min(nx - 1, int(bb['x_max'] / width * (nx - 1)))
             iy_min = max(0, int(bb['y_min'] / length * (ny - 1)))
             iy_max = min(ny - 1, int(bb['y_max'] / length * (ny - 1)))
             
-            val = V_mag if bb['signal'] == 'Positive (+)' else -V_mag
+            # Assign positive peak or negative peak reference
+            val = (V_peak / 2.0) if bb['signal'] == 'Positive (+)' else (-V_peak / 2.0)
+            
             if bb['layer'] == 'Top ITO':
-                top_pos_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
-                top_val_mask[iy_min:iy_max+1, ix_min:ix_max+1] = val
-                has_top = True
+                top_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
+                top_vals[iy_min:iy_max+1, ix_min:ix_max+1] = val
             else:
-                bot_pos_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
-                bot_val_mask[iy_min:iy_max+1, ix_min:ix_max+1] = val
-                has_bot = True
+                bot_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
+                bot_vals[iy_min:iy_max+1, ix_min:ix_max+1] = val
                 
-        if not has_top: V_top[:, :] = 0.0
-        if not has_bot: V_bot[:, :] = 0.0
-        return top_pos_mask, top_val_mask, bot_pos_mask, bot_val_mask
+        return top_mask, top_vals, bot_mask, bot_vals
 
-    # Helper solver execution
-    def run_fdtd(init_top, init_bot, target_top_val, target_bot_val, top_mask, bot_mask):
-        V_t, V_b = init_top.copy(), init_bot.copy()
-        V_t[top_mask] = target_top_val[top_mask]
-        V_b[bot_mask] = target_bot_val[bot_mask]
+    t_mask, t_vals, b_mask, b_vals = get_busbar_masks_and_targets(ny, nx)
+
+    def run_fdtd(init_t, init_b, target_t, target_b):
+        V_t, V_b = init_t.copy(), init_b.copy()
+        V_t[t_mask] = target_t[t_mask]
+        V_b[b_mask] = target_b[b_mask]
         
         for _ in range(steps):
             V_t_new = V_t.copy()
@@ -120,51 +124,41 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap,
                 V_b[1:-1, 2:] + V_b[1:-1, :-2] + V_b[2:, 1:-1] + V_b[:-2, 1:-1] - 4*V_b[1:-1, 1:-1]
             )
             
-            # Enforce constraints
-            V_t_new[top_mask] = target_top_val[top_mask]
-            V_b_new[bot_mask] = target_bot_val[bot_mask]
+            V_t_new[t_mask] = target_t[t_mask]
+            V_b_new[b_mask] = target_b[b_mask]
             
-            # Neumann boundaries
             for V_arr in [V_t_new, V_b_new]:
                 V_arr[0, :] = V_arr[1, :]
                 V_arr[-1, :] = V_arr[-2, :]
                 V_arr[:, 0] = V_arr[:, 1]
                 V_arr[:, -1] = V_arr[:, -2]
                 
-            V_t_new[top_mask] = target_top_val[top_mask]
-            V_b_new[bot_mask] = target_bot_val[bot_mask]
+            V_t_new[t_mask] = target_t[t_mask]
+            V_b_new[b_mask] = target_b[b_mask]
             
             V_t, V_b = V_t_new, V_b_new
         return V_t, V_b
 
-    # Masks
-    dummy_t, dummy_b = np.zeros((ny, nx)), np.zeros((ny, nx))
-    t_mask, t_vals, b_mask, b_vals = get_busbar_masks_and_targets(dummy_t, dummy_b)
-
-    # 1. TURN-ON: Starts from 0V, charges up toward busbar targets
+    # 1. TURN-ON: Starts from 0V everywhere, charges up to busbar potentials
     init_on_t, init_on_b = np.zeros((ny, nx)), np.zeros((ny, nx))
-    final_t_on, final_b_on = run_fdtd(init_on_t, init_on_b, t_vals, b_vals, t_mask, b_mask)
+    final_t_on, final_b_on = run_fdtd(init_on_t, init_on_b, t_vals, b_vals)
     V_eff_on = np.abs(final_t_on - final_b_on)
 
-    # 2. TURN-OFF: Starts from steady-state charged condition, discharges toward 0V
-    steady_t, steady_b = t_vals.copy(), b_vals.copy() # Simplified steady-state approximation
-    steady_t[~t_mask] = 0.0 # Unconstrained regions start fully charged or interpolated
-    steady_b[~b_mask] = 0.0
-    
-    # Discharge target is 0V everywhere
+    # 2. TURN-OFF: Starts fully charged at steady-state distribution, discharges back to 0V
+    steady_t, steady_b = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals) # Reach steady state first
     zero_vals = np.zeros((ny, nx))
-    final_t_off, final_b_off = run_fdtd(steady_t, steady_b, zero_vals, zero_vals, t_mask, b_mask)
+    final_t_off, final_b_off = run_fdtd(steady_t, steady_b, zero_vals, zero_vals)
     V_eff_off = np.abs(final_t_off - final_b_off)
 
     return V_eff_on, V_eff_off, steps
 
 # --- EXECUTE ---
-with st.spinner("Calculating Turn-ON and Turn-OFF differential profiles..."):
+with st.spinner("Solving transient differential matrices..."):
     V_on, V_off, total_steps = simulate_on_off_transients(
-        c_area, r_sq, film_w, film_l, configured_busbars, v_drive, t_snapshot, resolution, resolution
+        c_area, r_sq, film_w, film_l, configured_busbars, v_peak, t_snapshot, resolution, resolution
     )
 
-# --- PLOTTING WITH MARKERS ---
+# --- PLOTTING ---
 x_grid = np.linspace(0, film_w, resolution)
 y_grid = np.linspace(0, film_l, resolution)
 
@@ -172,7 +166,7 @@ def add_busbar_traces(fig):
     for i, bb in enumerate(configured_busbars):
         bx = [bb['x_min'], bb['x_max'], bb['x_max'], bb['x_min'], bb['x_min']]
         by = [bb['y_min'], bb['y_min'], bb['y_max'], bb['y_max'], bb['y_min']]
-        bz = [v_drive * 2.05] * 5
+        bz = [v_peak * 1.05] * 5
         color = "red" if bb['signal'] == 'Positive (+)' else "blue"
         fig.add_trace(go.Scatter3d(
             x=bx, y=by, z=bz, mode='lines',
@@ -188,7 +182,7 @@ with col1:
     fig_on.update_layout(
         title=f"Turn-ON Differential Voltage (t = {t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Differential Voltage (V)', zaxis=dict(range=[0, v_drive * 2.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Differential Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
     )
     st.plotly_chart(fig_on, use_container_width=True)
 
@@ -198,7 +192,7 @@ with col2:
     fig_off.update_layout(
         title=f"Turn-OFF Differential Voltage (t = {t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Differential Voltage (V)', zaxis=dict(range=[0, v_drive * 2.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Differential Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
     )
     st.plotly_chart(fig_off, use_container_width=True)
 

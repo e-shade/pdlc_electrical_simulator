@@ -27,7 +27,6 @@ with st.sidebar:
     c_area_uf = st.number_input("Capacitance (µF/m²)", min_value=0.1, max_value=100.0, value=11.0, step=0.5)
     c_area = c_area_uf * 1e-6
     
-    # RMS Voltage Control Slider (Automatically calculates Peak Amplitude V_p = V_rms * sqrt(2))
     v_rms = st.slider("Applied AC Voltage (RMS)", 10.0, 150.0, 48.0, step=2.0)
     v_peak = v_rms * np.sqrt(2)
     st.caption(f"Equivalent Peak Voltage ($V_p$): **{v_peak:.1f} V**")
@@ -49,7 +48,10 @@ with st.sidebar:
 
     configured_busbars = []
     for i, bb in enumerate(st.session_state.busbars):
-        with st.expander(f"Busbar #{i+1} ({bb['layer']} - {bb['signal']})", expanded=True):
+        # Color indicator emoji mapping for expander titles
+        color_indicator = "🔴" if bb['signal'] == 'Positive (+)' else "🔵"
+        
+        with st.expander(f"{color_indicator} Busbar #{i+1} ({bb['layer']} - {bb['signal']})", expanded=True):
             col_x1, col_x2 = st.columns(2)
             x_start = col_x1.number_input(f"X start (m) #{i+1}", 0.0, film_w, float(bb['x_start']), step=0.05, key=f"x1_{i}")
             x_end = col_x2.number_input(f"X end (m) #{i+1}", 0.0, film_w, float(bb['x_end']), step=0.05, key=f"x2_{i}")
@@ -73,7 +75,7 @@ with st.sidebar:
     t_snapshot = t_snapshot_us * 1e-6
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
-# --- CORRECTED COUPLED FDTD SOLVER ---
+# --- COUPLED FDTD SOLVER ---
 @st.cache_data
 def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap, nx, ny):
     dx = width / (nx - 1)
@@ -95,7 +97,6 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap
             iy_min = max(0, int(bb['y_min'] / length * (ny - 1)))
             iy_max = min(ny - 1, int(bb['y_max'] / length * (ny - 1)))
             
-            # Assign positive peak or negative peak reference
             val = (V_peak / 2.0) if bb['signal'] == 'Positive (+)' else (-V_peak / 2.0)
             
             if bb['layer'] == 'Top ITO':
@@ -139,13 +140,11 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap
             V_t, V_b = V_t_new, V_b_new
         return V_t, V_b
 
-    # 1. TURN-ON: Starts from 0V everywhere, charges up to busbar potentials
     init_on_t, init_on_b = np.zeros((ny, nx)), np.zeros((ny, nx))
     final_t_on, final_b_on = run_fdtd(init_on_t, init_on_b, t_vals, b_vals)
     V_eff_on = np.abs(final_t_on - final_b_on)
 
-    # 2. TURN-OFF: Starts fully charged at steady-state distribution, discharges back to 0V
-    steady_t, steady_b = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals) # Reach steady state first
+    steady_t, steady_b = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals)
     zero_vals = np.zeros((ny, nx))
     final_t_off, final_b_off = run_fdtd(steady_t, steady_b, zero_vals, zero_vals)
     V_eff_off = np.abs(final_t_off - final_b_off)
@@ -171,7 +170,7 @@ def add_busbar_traces(fig):
         fig.add_trace(go.Scatter3d(
             x=bx, y=by, z=bz, mode='lines',
             line=dict(color=color, width=6),
-            name=f"BB#{i+1} ({bb['layer']} {bb['signal']})"
+            showlegend=False  # Disabled built-in legend to prevent overlap
         ))
 
 col1, col2 = st.columns(2)

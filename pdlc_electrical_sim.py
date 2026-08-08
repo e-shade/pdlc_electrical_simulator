@@ -72,7 +72,7 @@ with st.sidebar:
     t_snapshot = t_snapshot_us * 1e-6
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
-# --- COUPLED 2-LAYER FDTD SOLVER ---
+# --- COUPLED 2-LAYER FDTD SOLVER (BIPOLAR SIGNALS) ---
 @st.cache_data
 def simulate_coupled_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap, nx, ny):
     dx = width / (nx - 1)
@@ -84,31 +84,42 @@ def simulate_coupled_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap
     alpha = dt / (R_sq * C_A * dx**2)
 
     def apply_busbar_masks(V_top, V_bot):
-        top_pos, top_neg = np.zeros((ny, nx), dtype=bool), np.zeros((ny, nx), dtype=bool)
-        bot_pos, bot_neg = np.zeros((ny, nx), dtype=bool), np.zeros((ny, nx), dtype=bool)
+        top_pos_mask, top_val_mask = np.zeros((ny, nx), dtype=bool), np.zeros((ny, nx))
+        bot_pos_mask, bot_val_mask = np.zeros((ny, nx), dtype=bool), np.zeros((ny, nx))
         
+        has_top_bb = False
+        has_bot_bb = False
+
         for bb in busbars:
             ix_min = max(0, int(bb['x_min'] / width * (nx - 1)))
             ix_max = min(nx - 1, int(bb['x_max'] / width * (nx - 1)))
             iy_min = max(0, int(bb['y_min'] / length * (ny - 1)))
             iy_max = min(ny - 1, int(bb['y_max'] / length * (ny - 1)))
             
-            val = V_mag if bb['signal'] == 'Positive (+)' else 0.0
+            # Bipolar mapping: Positive = +V_mag, Negative = -V_mag (or 0 reference)
+            val = V_mag if bb['signal'] == 'Positive (+)' else -V_mag
+            
             if bb['layer'] == 'Top ITO':
                 V_top[iy_min:iy_max+1, ix_min:ix_max+1] = val
-                if bb['signal'] == 'Positive (+)': top_pos[iy_min:iy_max+1, ix_min:ix_max+1] = True
-                else: top_neg[iy_min:iy_max+1, ix_min:ix_max+1] = True
+                top_pos_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
+                top_val_mask[iy_min:iy_max+1, ix_min:ix_max+1] = val
+                has_top_bb = True
             else:
                 V_bot[iy_min:iy_max+1, ix_min:ix_max+1] = val
-                if bb['signal'] == 'Positive (+)': bot_pos[iy_min:iy_max+1, ix_min:ix_max+1] = True
-                else: bot_neg[iy_min:iy_max+1, ix_min:ix_max+1] = True
+                bot_pos_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
+                bot_val_mask[iy_min:iy_max+1, ix_min:ix_max+1] = val
+                has_bot_bb = True
                 
-        return V_top, V_bot, (top_pos, top_neg, bot_pos, bot_neg)
+        # Fallback defaults if a layer has no busbars assigned
+        if not has_top_bb: V_top[:, :] = 0.0
+        if not has_bot_bb: V_bot[:, :] = 0.0
+                
+        return V_top, V_bot, (top_pos_mask, top_val_mask, bot_pos_mask, bot_val_mask)
 
     V_top = np.zeros((ny, nx))
     V_bot = np.zeros((ny, nx))
     V_top, V_bot, masks = apply_busbar_masks(V_top, V_bot)
-    top_pos, top_neg, bot_pos, bot_neg = masks
+    top_pos_mask, top_val_mask, bot_pos_mask, bot_val_mask = masks
 
     for _ in range(steps):
         V_top_new = V_top.copy()
@@ -120,11 +131,11 @@ def simulate_coupled_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap
             V_bot[1:-1, 2:] + V_bot[1:-1, :-2] + V_bot[2:, 1:-1] + V_bot[:-2, 1:-1] - 4*V_bot[1:-1, 1:-1]
         )
         
-        V_top_new[top_pos] = V_mag
-        V_top_new[top_neg] = 0.0
-        V_bot_new[bot_pos] = V_mag
-        V_bot_new[bot_neg] = 0.0
+        # Enforce Dirichlet boundary conditions for busbars
+        V_top_new[top_pos_mask] = top_val_mask[top_pos_mask]
+        V_bot_new[bot_pos_mask] = bot_val_mask[bot_pos_mask]
         
+        # Neumann boundaries for unconstrained edges
         V_top_new[0, :] = V_top_new[1, :]
         V_top_new[-1, :] = V_top_new[-2, :]
         V_top_new[:, 0] = V_top_new[:, 1]
@@ -135,13 +146,13 @@ def simulate_coupled_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap
         V_bot_new[:, 0] = V_bot_new[:, 1]
         V_bot_new[:, -1] = V_bot_new[:, -2]
 
-        V_top_new[top_pos] = V_mag
-        V_top_new[top_neg] = 0.0
-        V_bot_new[bot_pos] = V_mag
-        V_bot_new[bot_neg] = 0.0
+        # Re-apply busbars post Neumann
+        V_top_new[top_pos_mask] = top_val_mask[top_pos_mask]
+        V_bot_new[bot_pos_mask] = bot_val_mask[bot_pos_mask]
 
         V_top, V_bot = V_top_new, V_bot_new
 
+    # Effective potential difference across the PDLC dielectric layer (|V_top - V_bot|)
     V_effective = np.abs(V_top - V_bot)
     return V_effective, V_top, V_bot, steps
 

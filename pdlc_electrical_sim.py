@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with AC RMS voltage metrics and DC supply power estimation.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with accurate area-scaled power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -155,34 +155,30 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
             V_t, V_b = V_t_new, V_b_new
         return V_t, V_b
 
-    # 1. Turn-ON Transient (Converted to RMS scale: Peak / sqrt(2))
     final_t_on, final_b_on = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals, steps)
     V_eff_on = np.abs(final_t_on - final_b_on) / np.sqrt(2)
 
-    # 2. Turn-OFF Transient (Converted to RMS scale)
     steady_t, steady_b = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals, int(5000e-6 / dt))
     final_t_off, final_b_off = run_fdtd(steady_t, steady_b, np.zeros((ny, nx)), np.zeros((ny, nx)), steps)
     V_eff_off = np.abs(final_t_off - final_b_off) / np.sqrt(2)
 
-    # 3. Steady-State ON State Map (Converted to RMS scale)
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # Power estimation from DC supply: P_dc ~ P_active (ITO losses) + P_ capacitive reactive draw
-    # Assuming typical driver efficiency or estimating active resistive dissipation + charging overhead
-    total_film_area = width * length
-    approx_resistance = R_sq * (length / width if width > 0 else 1.0)
-    active_power_w = (v_rms_val ** 2) / max(approx_resistance, 1.0)
+    # --- CORRECTED AREA-SCALED POWER CALCULATIONS ---
+    total_area = width * length
+    total_capacitance = C_A * total_area
+    f_driver = 60.0  # Standard AC drive frequency
     
-    # Add reactive power component estimation for AC drivers drawing from DC supply (approx power factor consideration)
-    # Total apparent power S = V_rms * I_rms, where I_rms = V_rms * omega * C_total
-    # Assuming standard 60Hz driving frequency for smart glass power supplies
-    f_driver = 60.0
-    c_total = C_A * total_film_area
-    reactive_current_rms = v_rms_val * (2 * np.pi * f_driver * c_total)
-    apparent_power_va = v_rms_val * reactive_current_rms
+    # 1. Effective resistance scales directly with film geometry
+    effective_resistance = R_sq * (length / width) if width > 0 else R_sq
+    active_power_w = (v_rms_val ** 2) / max(effective_resistance, 1.0)
     
-    # Total DC supply power draw estimated considering driver conversion overhead and reactive load
-    dc_supply_power_w = active_power_w + (apparent_power_va * 0.15) # 15% estimated driver loss/overhead factor
+    # 2. Capacitive reactive power current draw scales directly with total area capacitance
+    reactive_current_rms = v_rms_val * (2 * np.pi * f_driver * total_capacitance)
+    reactive_power_va = v_rms_val * reactive_current_rms
+    
+    # Total power drawn from the DC supply (incorporating driver inversion and capacitive charging losses)
+    dc_supply_power_w = active_power_w + (reactive_power_va * 0.10)
 
     return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, dc_supply_power_w
 
@@ -208,7 +204,6 @@ def add_busbar_traces(fig):
             showlegend=False
         ))
 
-# Row 1: Transient Maps Side-by-Side
 col1, col2 = st.columns(2)
 
 with col1:
@@ -231,7 +226,6 @@ with col2:
     )
     st.plotly_chart(fig_off, use_container_width=True)
 
-# Row 2: Steady-State Map Centered/Below
 st.markdown("---")
 st.subheader("Steady-State ON State Distribution")
 fig_steady = go.Figure(data=[go.Surface(z=V_steady, x=x_grid, y=y_grid, colorscale="Plasma")])

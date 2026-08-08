@@ -13,8 +13,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("⚡ Advanced Multi-Busbar PDLC Transient Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver: Turn-ON (Left) vs. Turn-OFF (Right) Transients.")
+st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with steady-state mapping and power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -52,7 +52,6 @@ with st.sidebar:
         current_layer = st.session_state.get(f"lay_{i}", bb['layer'])
 
         with st.expander(f"Busbar #{i+1} ({current_layer})", expanded=True):
-            # Render clear color-coded legend description inside the expander
             if current_signal == 'Positive (+)':
                 st.markdown(":red[**● Signal: Positive (+) [Red Wireframe]**]")
             else:
@@ -83,7 +82,7 @@ with st.sidebar:
 
 # --- COUPLED FDTD SOLVER ---
 @st.cache_data
-def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap, nx, ny):
+def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
     
@@ -91,7 +90,7 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap
     steps = int(t_snap / dt)
     alpha = dt / (R_sq * C_A * dx**2)
 
-    def get_busbar_masks_and_targets(ny, nx):
+    def get_masks_and_targets(ny, nx):
         top_mask = np.zeros((ny, nx), dtype=bool)
         top_vals = np.zeros((ny, nx))
         bot_mask = np.zeros((ny, nx), dtype=bool)
@@ -124,14 +123,14 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap
                 
         return top_mask, top_vals, bot_mask, bot_vals
 
-    t_mask, t_vals, b_mask, b_vals = get_busbar_masks_and_targets(ny, nx)
+    t_mask, t_vals, b_mask, b_vals = get_masks_and_targets(ny, nx)
 
-    def run_fdtd(init_t, init_b, target_t, target_b):
+    def run_fdtd(init_t, init_b, target_t, target_b, custom_steps):
         V_t, V_b = init_t.copy(), init_b.copy()
         V_t[t_mask] = target_t[t_mask]
         V_b[b_mask] = target_b[b_mask]
         
-        for _ in range(steps):
+        for _ in range(custom_steps):
             V_t_new = V_t.copy()
             V_t_new[1:-1, 1:-1] = V_t[1:-1, 1:-1] + alpha * (
                 V_t[1:-1, 2:] + V_t[1:-1, :-2] + V_t[2:, 1:-1] + V_t[:-2, 1:-1] - 4*V_t[1:-1, 1:-1]
@@ -156,20 +155,29 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap
             V_t, V_b = V_t_new, V_b_new
         return V_t, V_b
 
-    init_on_t, init_on_b = np.zeros((ny, nx)), np.zeros((ny, nx))
-    final_t_on, final_b_on = run_fdtd(init_on_t, init_on_b, t_vals, b_vals)
+    # 1. Turn-ON Transient
+    final_t_on, final_b_on = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals, steps)
     V_eff_on = np.abs(final_t_on - final_b_on)
 
-    steady_t, steady_b = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals)
-    zero_vals = np.zeros((ny, nx))
-    final_t_off, final_b_off = run_fdtd(steady_t, steady_b, zero_vals, zero_vals)
+    # 2. Turn-OFF Transient
+    steady_t, steady_b = run_fdtd(np.zeros((ny, nx)), np.zeros((ny, nx)), t_vals, b_vals, int(5000e-6 / dt))
+    final_t_off, final_b_off = run_fdtd(steady_t, steady_b, np.zeros((ny, nx)), np.zeros((ny, nx)), steps)
     V_eff_off = np.abs(final_t_off - final_b_off)
 
-    return V_eff_on, V_eff_off, steps
+    # 3. Steady-State ON State Map
+    V_eff_steady = np.abs(steady_t - steady_b)
+
+    # Power estimation: Active power loss in resistive ITO layers + Capacitive charging current estimate
+    # P_active = V_rms^2 / R_eff approximation
+    total_film_area = width * length
+    approx_resistance = R_sq * (length / width if width > 0 else 1.0)
+    active_power_w = (v_rms ** 2) / max(approx_resistance, 1.0)
+
+    return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w
 
 # --- EXECUTE ---
-with st.spinner("Solving transient differential matrices..."):
-    V_on, V_off, total_steps = simulate_on_off_transients(
+with st.spinner("Solving transient and steady-state fields..."):
+    V_on, V_off, V_steady, total_steps, power_w = simulate_all_profiles(
         c_area, r_sq, film_w, film_l, configured_busbars, v_peak, t_snapshot, resolution, resolution
     )
 
@@ -189,15 +197,15 @@ def add_busbar_traces(fig):
             showlegend=False
         ))
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     fig_on = go.Figure(data=[go.Surface(z=V_on, x=x_grid, y=y_grid, colorscale="Inferno")])
     add_busbar_traces(fig_on)
     fig_on.update_layout(
-        title=f"Turn-ON Differential Voltage (t = {t_snapshot_us} µs)",
+        title=f"Turn-ON ({t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Differential Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
     )
     st.plotly_chart(fig_on, use_container_width=True)
 
@@ -205,16 +213,27 @@ with col2:
     fig_off = go.Figure(data=[go.Surface(z=V_off, x=x_grid, y=y_grid, colorscale="Viridis")])
     add_busbar_traces(fig_off)
     fig_off.update_layout(
-        title=f"Turn-OFF Differential Voltage (t = {t_snapshot_us} µs)",
+        title=f"Turn-OFF ({t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Differential Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
     )
     st.plotly_chart(fig_off, use_container_width=True)
 
+with col3:
+    fig_steady = go.Figure(data=[go.Surface(z=V_steady, x=x_grid, y=y_grid, colorscale="Plasma")])
+    add_busbar_traces(fig_steady)
+    fig_steady.update_layout(
+        title="Steady-State ON State",
+        autosize=True, margin=dict(l=0, r=0, b=0, t=40),
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_peak * 1.1]))
+    )
+    st.plotly_chart(fig_steady, use_container_width=True)
+
 # --- METRICS ---
 st.divider()
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Active Busbars Configured", len(configured_busbars))
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("Active Busbars", len(configured_busbars))
 m2.metric("Center Turn-ON Voltage", f"{V_on[resolution//2, resolution//2]:.2f} V")
 m3.metric("Center Turn-OFF Voltage", f"{V_off[resolution//2, resolution//2]:.2f} V")
-m4.metric("FDTD Iteration Steps", f"{total_steps:,}")
+m4.metric("Steady-State Center Voltage", f"{V_steady[resolution//2, resolution//2]:.2f} V")
+m5.metric("Est. Active Power (RMS)", f"{power_w:.3f} W")

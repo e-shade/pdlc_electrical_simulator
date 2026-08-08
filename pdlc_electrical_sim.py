@@ -48,10 +48,8 @@ with st.sidebar:
 
     configured_busbars = []
     for i, bb in enumerate(st.session_state.busbars):
-        # Color indicator emoji mapping for expander titles
-        color_indicator = "🔴" if bb['signal'] == 'Positive (+)' else "🔵"
-        
-        with st.expander(f"{color_indicator} Busbar #{i+1} ({bb['layer']} - {bb['signal']})", expanded=True):
+        # Render widgets first to capture current live state
+        with st.expander(f"Busbar #{i+1}", expanded=True):
             col_x1, col_x2 = st.columns(2)
             x_start = col_x1.number_input(f"X start (m) #{i+1}", 0.0, film_w, float(bb['x_start']), step=0.05, key=f"x1_{i}")
             x_end = col_x2.number_input(f"X end (m) #{i+1}", 0.0, film_w, float(bb['x_end']), step=0.05, key=f"x2_{i}")
@@ -91,6 +89,7 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap
         bot_mask = np.zeros((ny, nx), dtype=bool)
         bot_vals = np.zeros((ny, nx))
         
+        has_top, has_bot = False, False
         for bb in busbars:
             ix_min = max(0, int(bb['x_min'] / width * (nx - 1)))
             ix_max = min(nx - 1, int(bb['x_max'] / width * (nx - 1)))
@@ -102,9 +101,19 @@ def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_peak, t_snap
             if bb['layer'] == 'Top ITO':
                 top_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
                 top_vals[iy_min:iy_max+1, ix_min:ix_max+1] = val
+                has_top = True
             else:
                 bot_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
                 bot_vals[iy_min:iy_max+1, ix_min:ix_max+1] = val
+                has_bot = True
+                
+        # If only one layer is populated, ground the opposite layer to serve as reference plane
+        if has_top and not has_bot:
+            bot_mask[:, :] = True
+            bot_vals[:, :] = 0.0
+        elif has_bot and not has_top:
+            top_mask[:, :] = True
+            top_vals[:, :] = 0.0
                 
         return top_mask, top_vals, bot_mask, bot_vals
 
@@ -170,7 +179,7 @@ def add_busbar_traces(fig):
         fig.add_trace(go.Scatter3d(
             x=bx, y=by, z=bz, mode='lines',
             line=dict(color=color, width=6),
-            showlegend=False  # Disabled built-in legend to prevent overlap
+            showlegend=False
         ))
 
 col1, col2 = st.columns(2)

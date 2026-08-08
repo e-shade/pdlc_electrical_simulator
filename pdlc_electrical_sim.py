@@ -14,13 +14,17 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with resistance-sensitive power estimation.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with AC RMS voltage metrics and resistance-sensitive power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
     st.header("1. Film Geometry")
-    film_w = st.slider("Width (m)", 0.1, 3.0, 1.0, step=0.1)
-    film_l = st.slider("Length (m)", 0.1, 3.0, 1.0, step=0.1)
+    film_w_cm = st.slider("Width (cm)", 10.0, 300.0, 100.0, step=5.0)
+    film_l_cm = st.slider("Length (cm)", 10.0, 300.0, 100.0, step=5.0)
+    
+    # Convert cm to meters for internal solver calculations
+    film_w = film_w_cm / 100.0
+    film_l = film_l_cm / 100.0
 
     st.header("2. Electrical Properties")
     r_sq = st.number_input("ITO Sheet Resistance (Ω/sq)", min_value=10.0, max_value=2000.0, value=200.0, step=10.0)
@@ -34,14 +38,14 @@ with st.sidebar:
     st.header("3. Multi-Busbar Configuration")
     if 'busbars' not in st.session_state:
         st.session_state.busbars = [
-            {'x_start': 0.0, 'x_end': 0.05, 'y_start': 0.0, 'y_end': 0.4, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
-            {'x_start': 0.0, 'x_end': 0.05, 'y_start': 0.6, 'y_end': 1.0, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
+            {'x_start': 0.0, 'x_end': 5.0, 'y_start': 0.0, 'y_end': 40.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
+            {'x_start': 0.0, 'x_end': 5.0, 'y_start': 60.0, 'y_end': 100.0, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
         ]
 
     col_add, col_rem = st.columns(2)
     if col_add.button("➕ Add Busbar"):
         st.session_state.busbars.append(
-            {'x_start': 0.0, 'x_end': film_w, 'y_start': 0.0, 'y_end': 0.5, 'layer': 'Top ITO', 'signal': 'Positive (+)'}
+            {'x_start': 0.0, 'x_end': film_w_cm, 'y_start': 0.0, 'y_end': film_l_cm / 2.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'}
         )
     if col_rem.button("🗑️ Remove Last") and len(st.session_state.busbars) > 1:
         st.session_state.busbars.pop()
@@ -58,20 +62,20 @@ with st.sidebar:
                 st.markdown(":blue[**● Signal: Negative (-) [Blue Wireframe]**]")
 
             col_x1, col_x2 = st.columns(2)
-            x_start = col_x1.number_input(f"X start (m) #{i+1}", 0.0, film_w, float(bb['x_start']), step=0.05, key=f"x1_{i}")
-            x_end = col_x2.number_input(f"X end (m) #{i+1}", 0.0, film_w, float(bb['x_end']), step=0.05, key=f"x2_{i}")
+            x_start_cm = col_x1.number_input(f"X start (cm) #{i+1}", 0.0, film_w_cm, float(bb['x_start']), step=1.0, key=f"x1_{i}")
+            x_end_cm = col_x2.number_input(f"X end (cm) #{i+1}", 0.0, film_w_cm, float(bb['x_end']), step=1.0, key=f"x2_{i}")
             
             col_y1, col_y2 = st.columns(2)
-            y_start = col_y1.number_input(f"Y start (m) #{i+1}", 0.0, film_l, float(bb['y_start']), step=0.05, key=f"y1_{i}")
-            y_end = col_y2.number_input(f"Y end (m) #{i+1}", 0.0, film_l, float(bb['y_end']), step=0.05, key=f"y2_{i}")
+            y_start_cm = col_y1.number_input(f"Y start (cm) #{i+1}", 0.0, film_l_cm, float(bb['y_start']), step=1.0, key=f"y1_{i}")
+            y_end_cm = col_y2.number_input(f"Y end (cm) #{i+1}", 0.0, film_l_cm, float(bb['y_end']), step=1.0, key=f"y2_{i}")
             
             col_l, col_s = st.columns(2)
             layer = col_l.selectbox(f"Layer #{i+1}", ["Top ITO", "Bottom ITO"], index=0 if current_layer=='Top ITO' else 1, key=f"lay_{i}")
             signal = col_s.selectbox(f"Signal #{i+1}", ["Positive (+)", "Negative (-)"], index=0 if current_signal=='Positive (+)' else 1, key=f"sig_{i}")
             
             configured_busbars.append({
-                'x_min': min(x_start, x_end), 'x_max': max(x_start, x_end),
-                'y_min': min(y_start, y_end), 'y_max': max(y_start, y_end),
+                'x_min': min(x_start_cm, x_end_cm) / 100.0, 'x_max': max(x_start_cm, x_end_cm) / 100.0,
+                'y_min': min(y_start_cm, y_end_cm) / 100.0, 'y_max': max(y_start_cm, y_end_cm) / 100.0,
                 'layer': layer, 'signal': signal
             })
 
@@ -169,24 +173,19 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
     total_capacitance = C_A * total_area
     f_driver = 60.0  # AC driving frequency
     
-    # Apparent power (VA) based on capacitive displacement current
     reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * v_rms_val
     apparent_power_va = v_rms_val * reactive_current_rms
     
-    # Resistance-dependent Power Factor calculation: Higher sheet resistance shifts phase angle and increases resistive loss ratio
     base_pf = min(0.524, 0.08 + (0.444 * total_area))
     resistance_scaling_factor = np.clip(R_sq / 150.0, 0.5, 2.0)
     empirical_pf = min(0.85, base_pf * resistance_scaling_factor)
     
-    # Real active power consumption: P = VA * PF + explicit sheet resistance Joule heating integration
     grad_y_t, grad_x_t = np.gradient(steady_t, dy, dx)
     grad_y_b, grad_x_b = np.gradient(steady_b, dy, dx)
     joule_dissipation = ((grad_x_t**2 + grad_y_t**2) + (grad_x_b**2 + grad_y_b**2)) / R_sq
     active_joule_power = np.sum(joule_dissipation) * (dx * dy)
     
     active_power_w = (apparent_power_va * empirical_pf) + active_joule_power
-    
-    # Total power drawn from DC supply including driver conversion overhead (~10%)
     dc_supply_power_w = active_power_w + (apparent_power_va * 0.10)
 
     return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, dc_supply_power_w
@@ -197,14 +196,14 @@ with st.spinner("Solving transient and steady-state fields..."):
         c_area, r_sq, film_w, film_l, configured_busbars, v_peak, v_rms, t_snapshot, resolution, resolution
     )
 
-# --- PLOTTING ---
-x_grid = np.linspace(0, film_w, resolution)
-y_grid = np.linspace(0, film_l, resolution)
+# --- PLOTTING (Axis labels scaled to cm) ---
+x_grid_cm = np.linspace(0, film_w_cm, resolution)
+y_grid_cm = np.linspace(0, film_l_cm, resolution)
 
 def add_busbar_traces(fig):
     for i, bb in enumerate(configured_busbars):
-        bx = [bb['x_min'], bb['x_max'], bb['x_max'], bb['x_min'], bb['x_min']]
-        by = [bb['y_min'], bb['y_min'], bb['y_max'], bb['y_max'], bb['y_min']]
+        bx = [bb['x_min'] * 100.0, bb['x_max'] * 100.0, bb['x_max'] * 100.0, bb['x_min'] * 100.0, bb['x_min'] * 100.0]
+        by = [bb['y_min'] * 100.0, bb['y_min'] * 100.0, bb['y_max'] * 100.0, bb['y_max'] * 100.0, bb['y_min'] * 100.0]
         bz = [v_rms * 1.05] * 5
         color = "red" if bb['signal'] == 'Positive (+)' else "blue"
         fig.add_trace(go.Scatter3d(
@@ -217,34 +216,34 @@ def add_busbar_traces(fig):
 col1, col2 = st.columns(2)
 
 with col1:
-    fig_on = go.Figure(data=[go.Surface(z=V_on, x=x_grid, y=y_grid, colorscale="Inferno")])
+    fig_on = go.Figure(data=[go.Surface(z=V_on, x=x_grid_cm, y=y_grid_cm, colorscale="Inferno")])
     add_busbar_traces(fig_on)
     fig_on.update_layout(
         title=f"Turn-ON Differential Voltage RMS ({t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
+        scene=dict(xaxis_title='Width (cm)', yaxis_title='Length (cm)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
     )
     st.plotly_chart(fig_on, use_container_width=True)
 
 with col2:
-    fig_off = go.Figure(data=[go.Surface(z=V_off, x=x_grid, y=y_grid, colorscale="Viridis")])
+    fig_off = go.Figure(data=[go.Surface(z=V_off, x=x_grid_cm, y=y_grid_cm, colorscale="Viridis")])
     add_busbar_traces(fig_off)
     fig_off.update_layout(
         title=f"Turn-OFF Differential Voltage RMS ({t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
+        scene=dict(xaxis_title='Width (cm)', yaxis_title='Length (cm)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
     )
     st.plotly_chart(fig_off, use_container_width=True)
 
 # Row 2: Steady-State Map Below
 st.markdown("---")
 st.subheader("Steady-State ON State Distribution")
-fig_steady = go.Figure(data=[go.Surface(z=V_steady, x=x_grid, y=y_grid, colorscale="Plasma")])
+fig_steady = go.Figure(data=[go.Surface(z=V_steady, x=x_grid_cm, y=y_grid_cm, colorscale="Plasma")])
 add_busbar_traces(fig_steady)
 fig_steady.update_layout(
     title="Steady-State ON State Differential Voltage RMS",
     autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-    scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
+    scene=dict(xaxis_title='Width (cm)', yaxis_title='Length (cm)', zaxis_title='RMS Voltage (V)', zaxis=dict(range=[0, v_rms * 1.1]))
 )
 st.plotly_chart(fig_steady, use_container_width=True)
 

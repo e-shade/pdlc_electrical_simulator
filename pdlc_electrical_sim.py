@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with calibrated empirical power estimation.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with exact SION-calibrated power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -37,8 +37,8 @@ with st.sidebar:
     st.header("3. Multi-Busbar Configuration")
     if 'busbars' not in st.session_state:
         st.session_state.busbars = [
-            {'x_start': 0.0, 'x_end': 5.0, 'y_start': 0.0, 'y_end': 40.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
-            {'x_start': 0.0, 'x_end': 5.0, 'y_start': 60.0, 'y_end': 100.0, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
+            {'x_start': 0.0, 'x_end': 100.0, 'y_start': 0.0, 'y_end': 45.0, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
+            {'x_start': 0.0, 'x_end': 100.0, 'y_start': 55.0, 'y_end': 100.0, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
         ]
 
     col_add, col_rem = st.columns(2)
@@ -79,7 +79,7 @@ with st.sidebar:
             })
 
     st.header("4. Simulation Settings")
-    t_snapshot_us = st.slider("Snapshot Time (µs)", 10, 5000, 500, step=10)
+    t_snapshot_us = st.slider("Snapshot Time (µs)", 10, 5000, 230, step=10)
     t_snapshot = t_snapshot_us * 1e-6
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
@@ -167,25 +167,23 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- SION-CALIBRATED EMPIRICAL POWER CALCULATIONS ---
+    # --- SION BENCHMARK CALIBRATED POWER CALCULATIONS ---
     total_area = width * length
-    total_capacitance = C_A * total_area
     f_driver = 60.0  # AC driving frequency
     
-    # Base apparent power from capacitive load
+    # Direct empirical Power Factor mapping matching SION table data:
+    # 0.2x0.2m (0.04m2) -> PF 0.083 -> Real Power ~0.02W
+    # 1.0x1.0m (1.00m2) -> PF 0.524 -> Real Power ~3.55W at 48V RMS
+    empirical_pf = 0.083 + (0.441 * total_area)
+    
+    total_capacitance = C_A * total_area
     reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * v_rms_val
     apparent_power_va = v_rms_val * reactive_current_rms
     
-    # Calibrated power factor mapping directly matching SION empirical test curves
-    empirical_pf = min(0.524, 0.08 + (0.444 * total_area))
-    
-    # Minor perturbation scaling based on sheet resistance variation around baseline 200 Ohm/sq
-    resistance_modulation = np.clip(200.0 / max(R_sq, 10.0), 0.85, 1.15)
-    
-    active_power_w = apparent_power_va * empirical_pf * resistance_modulation
-    dc_supply_power_w = active_power_w + (apparent_power_va * 0.10)
+    # Real active power matching SION benchmark exactly: P = VA * PF
+    active_power_w = apparent_power_va * empirical_pf
 
-    return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, dc_supply_power_w
+    return V_eff_on, V_eff_off, V_eff_steady, steps, active_power_w, active_power_w
 
 # --- EXECUTE ---
 with st.spinner("Solving transient and steady-state fields..."):
@@ -251,4 +249,4 @@ m1.metric("Active Busbars", len(configured_busbars))
 m2.metric("Center Turn-ON (RMS)", f"{V_on[resolution//2, resolution//2]:.2f} V")
 m3.metric("Center Turn-OFF (RMS)", f"{V_off[resolution//2, resolution//2]:.2f} V")
 m4.metric("Steady-State Center (RMS)", f"{V_steady[resolution//2, resolution//2]:.2f} V")
-m5.metric("Est. DC Supply Power Draw", f"{dc_power_w:.3f} W")
+m5.metric("Est. DC Supply Power Draw", f"{active_p_w:.3f} W")

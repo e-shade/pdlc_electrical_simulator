@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient & Steady-State Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with AC RMS voltage metrics and SION-calibrated power estimation.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with resistance-sensitive power estimation.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -164,7 +164,7 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
 
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
-    # --- SION-CALIBRATED POWER CALCULATIONS ---
+    # --- RESISTANCE-SENSITIVE POWER CALCULATIONS ---
     total_area = width * length
     total_capacitance = C_A * total_area
     f_driver = 60.0  # AC driving frequency
@@ -173,11 +173,18 @@ def simulate_all_profiles(C_A, R_sq, width, length, busbars, V_peak, v_rms_val, 
     reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * v_rms_val
     apparent_power_va = v_rms_val * reactive_current_rms
     
-    # Empirical Power Factor scaling mapped from SION measurement dataset
-    empirical_pf = min(0.524, 0.08 + (0.444 * total_area))
+    # Resistance-dependent Power Factor calculation: Higher sheet resistance shifts phase angle and increases resistive loss ratio
+    base_pf = min(0.524, 0.08 + (0.444 * total_area))
+    resistance_scaling_factor = np.clip(R_sq / 150.0, 0.5, 2.0)
+    empirical_pf = min(0.85, base_pf * resistance_scaling_factor)
     
-    # Real active power consumption: P = VA * PF
-    active_power_w = apparent_power_va * empirical_pf
+    # Real active power consumption: P = VA * PF + explicit sheet resistance Joule heating integration
+    grad_y_t, grad_x_t = np.gradient(steady_t, dy, dx)
+    grad_y_b, grad_x_b = np.gradient(steady_b, dy, dx)
+    joule_dissipation = ((grad_x_t**2 + grad_y_t**2) + (grad_x_b**2 + grad_y_b**2)) / R_sq
+    active_joule_power = np.sum(joule_dissipation) * (dx * dy)
+    
+    active_power_w = (apparent_power_va * empirical_pf) + active_joule_power
     
     # Total power drawn from DC supply including driver conversion overhead (~10%)
     dc_supply_power_w = active_power_w + (apparent_power_va * 0.10)

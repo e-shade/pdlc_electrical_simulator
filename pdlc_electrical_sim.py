@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with custom multi-busbar routing.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver with custom multi-busbar routing and 3D visual markers.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -38,7 +38,6 @@ with st.sidebar:
             {'x_start': film_w - 0.05, 'x_end': film_w, 'y_start': 0.0, 'y_end': film_l, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
         ]
 
-    # Add / Remove controls
     col_add, col_rem = st.columns(2)
     if col_add.button("➕ Add Busbar"):
         st.session_state.busbars.append(
@@ -47,7 +46,6 @@ with st.sidebar:
     if col_rem.button("🗑️ Remove Last") and len(st.session_state.busbars) > 1:
         st.session_state.busbars.pop()
 
-    # Render inputs for each active busbar
     configured_busbars = []
     for i, bb in enumerate(st.session_state.busbars):
         with st.expander(f"Busbar #{i+1} ({bb['layer']} - {bb['signal']})", expanded=True):
@@ -107,31 +105,26 @@ def simulate_coupled_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap
                 
         return V_top, V_bot, (top_pos, top_neg, bot_pos, bot_neg)
 
-    # Initial state simulation (Turn ON from 0V)
     V_top = np.zeros((ny, nx))
     V_bot = np.zeros((ny, nx))
     V_top, V_bot, masks = apply_busbar_masks(V_top, V_bot)
     top_pos, top_neg, bot_pos, bot_neg = masks
 
     for _ in range(steps):
-        # Top layer diffusion update
         V_top_new = V_top.copy()
         V_top_new[1:-1, 1:-1] = V_top[1:-1, 1:-1] + alpha * (
             V_top[1:-1, 2:] + V_top[1:-1, :-2] + V_top[2:, 1:-1] + V_top[:-2, 1:-1] - 4*V_top[1:-1, 1:-1]
         )
-        # Bottom layer diffusion update
         V_bot_new = V_bot.copy()
         V_bot_new[1:-1, 1:-1] = V_bot[1:-1, 1:-1] + alpha * (
             V_bot[1:-1, 2:] + V_bot[1:-1, :-2] + V_bot[2:, 1:-1] + V_bot[:-2, 1:-1] - 4*V_bot[1:-1, 1:-1]
         )
         
-        # Re-enforce Dirichlet boundary conditions for busbars
         V_top_new[top_pos] = V_mag
         V_top_new[top_neg] = 0.0
         V_bot_new[bot_pos] = V_mag
         V_bot_new[bot_neg] = 0.0
         
-        # Neumann boundaries for unconstrained edges
         V_top_new[0, :] = V_top_new[1, :]
         V_top_new[-1, :] = V_top_new[-2, :]
         V_top_new[:, 0] = V_top_new[:, 1]
@@ -142,7 +135,6 @@ def simulate_coupled_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap
         V_bot_new[:, 0] = V_bot_new[:, 1]
         V_bot_new[:, -1] = V_bot_new[:, -2]
 
-        # Re-apply busbars post Neumann
         V_top_new[top_pos] = V_mag
         V_top_new[top_neg] = 0.0
         V_bot_new[bot_pos] = V_mag
@@ -150,7 +142,6 @@ def simulate_coupled_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap
 
         V_top, V_bot = V_top_new, V_bot_new
 
-    # Effective potential difference across the PDLC dielectric layer
     V_effective = np.abs(V_top - V_bot)
     return V_effective, V_top, V_bot, steps
 
@@ -160,27 +151,50 @@ with st.spinner("Solving multi-layer distributed network..."):
         c_area, r_sq, film_w, film_l, configured_busbars, v_drive, t_snapshot, resolution, resolution
     )
 
-# --- PLOTTING ---
+# --- PLOTTING WITH BUSBAR MARKERS ---
 x_grid = np.linspace(0, film_w, resolution)
 y_grid = np.linspace(0, film_l, resolution)
+
+def add_busbar_traces(fig, layer_filter_name=None):
+    """Adds 3D rectangular strips mapping the configured busbars onto the surface."""
+    for i, bb in enumerate(configured_busbars):
+        if layer_filter_name and bb['layer'] != layer_filter_name:
+            continue
+            
+        bx = [bb['x_min'], bb['x_max'], bb['x_max'], bb['x_min'], bb['x_min']]
+        by = [bb['y_min'], bb['y_min'], bb['y_max'], bb['y_max'], bb['y_min']]
+        # Place a raised marker strip at peak voltage level for visibility
+        bz = [v_drive * 1.02] * 5 
+        
+        color = "red" if bb['signal'] == 'Positive (+)' else "blue"
+        
+        # Add outline strip
+        fig.add_trace(go.Scatter3d(
+            x=bx, y=by, z=bz,
+            mode='lines',
+            line=dict(color=color, width=6),
+            name=f"BB#{i+1} ({bb['layer']} {bb['signal']})"
+        ))
 
 col1, col2 = st.columns(2)
 
 with col1:
     fig_eff = go.Figure(data=[go.Surface(z=V_eff, x=x_grid, y=y_grid, colorscale="Inferno")])
+    add_busbar_traces(fig_eff)
     fig_eff.update_layout(
-        title=f"Effective Dielectric Voltage Drop (t = {t_snapshot_us} µs)",
+        title=f"Effective Dielectric Voltage Drop & Busbars (t = {t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_drive]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_drive * 1.1]))
     )
     st.plotly_chart(fig_eff, use_container_width=True)
 
 with col2:
     fig_top = go.Figure(data=[go.Surface(z=V_t, x=x_grid, y=y_grid, colorscale="Viridis")])
+    add_busbar_traces(fig_top, layer_filter_name="Top ITO")
     fig_top.update_layout(
-        title=f"Top ITO Layer Potential (t = {t_snapshot_us} µs)",
+        title=f"Top ITO Potential & Top Busbars (t = {t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_drive]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_drive * 1.1]))
     )
     st.plotly_chart(fig_top, use_container_width=True)
 

@@ -14,7 +14,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("⚡ Advanced Multi-Busbar PDLC Transient Simulator")
-st.caption("Coupled top/bottom ITO layer finite-difference solver with custom multi-busbar routing and 3D visual markers.")
+st.caption("Coupled top/bottom ITO layer finite-difference solver: Turn-ON (Left) vs. Turn-OFF (Right) Transients.")
 
 # --- SIDEBAR GUI ---
 with st.sidebar:
@@ -29,19 +29,16 @@ with st.sidebar:
     v_drive = st.slider("Driving Voltage Magnitude (V)", 10.0, 150.0, 60.0, step=5.0)
 
     st.header("3. Multi-Busbar Configuration")
-    st.write("Configure individual busbar strips across the film boundaries:")
-    
-    # Initialize session state for dynamic busbars if not present
     if 'busbars' not in st.session_state:
         st.session_state.busbars = [
-            {'x_start': 0.0, 'x_end': 0.05, 'y_start': 0.0, 'y_end': film_l, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
-            {'x_start': film_w - 0.05, 'x_end': film_w, 'y_start': 0.0, 'y_end': film_l, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
+            {'x_start': 0.0, 'x_end': 0.05, 'y_start': 0.0, 'y_end': 0.4, 'layer': 'Top ITO', 'signal': 'Positive (+)'},
+            {'x_start': 0.0, 'x_end': 0.05, 'y_start': 0.6, 'y_end': 1.0, 'layer': 'Bottom ITO', 'signal': 'Negative (-)'}
         ]
 
     col_add, col_rem = st.columns(2)
     if col_add.button("➕ Add Busbar"):
         st.session_state.busbars.append(
-            {'x_start': 0.0, 'x_end': film_w, 'y_start': 0.0, 'y_end': 0.05, 'layer': 'Top ITO', 'signal': 'Positive (+)'}
+            {'x_start': 0.0, 'x_end': 0.05, 'y_start': 0.0, 'y_end': 0.5, 'layer': 'Top ITO', 'signal': 'Positive (+)'}
         )
     if col_rem.button("🗑️ Remove Last") and len(st.session_state.busbars) > 1:
         st.session_state.busbars.pop()
@@ -72,117 +69,113 @@ with st.sidebar:
     t_snapshot = t_snapshot_us * 1e-6
     resolution = st.select_slider("Grid Resolution", options=[20, 40, 60], value=40)
 
-# --- COUPLED 2-LAYER FDTD SOLVER (BIPOLAR SIGNALS) ---
+# --- COUPLED FDTD SOLVER FOR TURN-ON & TURN-OFF ---
 @st.cache_data
-def simulate_coupled_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap, nx, ny):
+def simulate_on_off_transients(C_A, R_sq, width, length, busbars, V_mag, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
     
     dt = 0.2 * (R_sq * C_A) / (1/(dx**2) + 1/(dy**2))
     steps = int(t_snap / dt)
-    
     alpha = dt / (R_sq * C_A * dx**2)
 
-    def apply_busbar_masks(V_top, V_bot):
+    def get_busbar_masks_and_targets(V_top, V_bot):
         top_pos_mask, top_val_mask = np.zeros((ny, nx), dtype=bool), np.zeros((ny, nx))
         bot_pos_mask, bot_val_mask = np.zeros((ny, nx), dtype=bool), np.zeros((ny, nx))
         
-        has_top_bb = False
-        has_bot_bb = False
-
+        has_top, has_bot = False, False
         for bb in busbars:
             ix_min = max(0, int(bb['x_min'] / width * (nx - 1)))
             ix_max = min(nx - 1, int(bb['x_max'] / width * (nx - 1)))
             iy_min = max(0, int(bb['y_min'] / length * (ny - 1)))
             iy_max = min(ny - 1, int(bb['y_max'] / length * (ny - 1)))
             
-            # Bipolar mapping: Positive = +V_mag, Negative = -V_mag (or 0 reference)
             val = V_mag if bb['signal'] == 'Positive (+)' else -V_mag
-            
             if bb['layer'] == 'Top ITO':
-                V_top[iy_min:iy_max+1, ix_min:ix_max+1] = val
                 top_pos_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
                 top_val_mask[iy_min:iy_max+1, ix_min:ix_max+1] = val
-                has_top_bb = True
+                has_top = True
             else:
-                V_bot[iy_min:iy_max+1, ix_min:ix_max+1] = val
                 bot_pos_mask[iy_min:iy_max+1, ix_min:ix_max+1] = True
                 bot_val_mask[iy_min:iy_max+1, ix_min:ix_max+1] = val
-                has_bot_bb = True
+                has_bot = True
                 
-        # Fallback defaults if a layer has no busbars assigned
-        if not has_top_bb: V_top[:, :] = 0.0
-        if not has_bot_bb: V_bot[:, :] = 0.0
+        if not has_top: V_top[:, :] = 0.0
+        if not has_bot: V_bot[:, :] = 0.0
+        return top_pos_mask, top_val_mask, bot_pos_mask, bot_val_mask
+
+    # Helper solver execution
+    def run_fdtd(init_top, init_bot, target_top_val, target_bot_val, top_mask, bot_mask):
+        V_t, V_b = init_top.copy(), init_bot.copy()
+        V_t[top_mask] = target_top_val[top_mask]
+        V_b[bot_mask] = target_bot_val[bot_mask]
+        
+        for _ in range(steps):
+            V_t_new = V_t.copy()
+            V_t_new[1:-1, 1:-1] = V_t[1:-1, 1:-1] + alpha * (
+                V_t[1:-1, 2:] + V_t[1:-1, :-2] + V_t[2:, 1:-1] + V_t[:-2, 1:-1] - 4*V_t[1:-1, 1:-1]
+            )
+            V_b_new = V_b.copy()
+            V_b_new[1:-1, 1:-1] = V_b[1:-1, 1:-1] + alpha * (
+                V_b[1:-1, 2:] + V_b[1:-1, :-2] + V_b[2:, 1:-1] + V_b[:-2, 1:-1] - 4*V_b[1:-1, 1:-1]
+            )
+            
+            # Enforce constraints
+            V_t_new[top_mask] = target_top_val[top_mask]
+            V_b_new[bot_mask] = target_bot_val[bot_mask]
+            
+            # Neumann boundaries
+            for V_arr in [V_t_new, V_b_new]:
+                V_arr[0, :] = V_arr[1, :]
+                V_arr[-1, :] = V_arr[-2, :]
+                V_arr[:, 0] = V_arr[:, 1]
+                V_arr[:, -1] = V_arr[:, -2]
                 
-        return V_top, V_bot, (top_pos_mask, top_val_mask, bot_pos_mask, bot_val_mask)
+            V_t_new[top_mask] = target_top_val[top_mask]
+            V_b_new[bot_mask] = target_bot_val[bot_mask]
+            
+            V_t, V_b = V_t_new, V_b_new
+        return V_t, V_b
 
-    V_top = np.zeros((ny, nx))
-    V_bot = np.zeros((ny, nx))
-    V_top, V_bot, masks = apply_busbar_masks(V_top, V_bot)
-    top_pos_mask, top_val_mask, bot_pos_mask, bot_val_mask = masks
+    # Masks
+    dummy_t, dummy_b = np.zeros((ny, nx)), np.zeros((ny, nx))
+    t_mask, t_vals, b_mask, b_vals = get_busbar_masks_and_targets(dummy_t, dummy_b)
 
-    for _ in range(steps):
-        V_top_new = V_top.copy()
-        V_top_new[1:-1, 1:-1] = V_top[1:-1, 1:-1] + alpha * (
-            V_top[1:-1, 2:] + V_top[1:-1, :-2] + V_top[2:, 1:-1] + V_top[:-2, 1:-1] - 4*V_top[1:-1, 1:-1]
-        )
-        V_bot_new = V_bot.copy()
-        V_bot_new[1:-1, 1:-1] = V_bot[1:-1, 1:-1] + alpha * (
-            V_bot[1:-1, 2:] + V_bot[1:-1, :-2] + V_bot[2:, 1:-1] + V_bot[:-2, 1:-1] - 4*V_bot[1:-1, 1:-1]
-        )
-        
-        # Enforce Dirichlet boundary conditions for busbars
-        V_top_new[top_pos_mask] = top_val_mask[top_pos_mask]
-        V_bot_new[bot_pos_mask] = bot_val_mask[bot_pos_mask]
-        
-        # Neumann boundaries for unconstrained edges
-        V_top_new[0, :] = V_top_new[1, :]
-        V_top_new[-1, :] = V_top_new[-2, :]
-        V_top_new[:, 0] = V_top_new[:, 1]
-        V_top_new[:, -1] = V_top_new[:, -2]
+    # 1. TURN-ON: Starts from 0V, charges up toward busbar targets
+    init_on_t, init_on_b = np.zeros((ny, nx)), np.zeros((ny, nx))
+    final_t_on, final_b_on = run_fdtd(init_on_t, init_on_b, t_vals, b_vals, t_mask, b_mask)
+    V_eff_on = np.abs(final_t_on - final_b_on)
 
-        V_bot_new[0, :] = V_bot_new[1, :]
-        V_bot_new[-1, :] = V_bot_new[-2, :]
-        V_bot_new[:, 0] = V_bot_new[:, 1]
-        V_bot_new[:, -1] = V_bot_new[:, -2]
+    # 2. TURN-OFF: Starts from steady-state charged condition, discharges toward 0V
+    steady_t, steady_b = t_vals.copy(), b_vals.copy() # Simplified steady-state approximation
+    steady_t[~t_mask] = 0.0 # Unconstrained regions start fully charged or interpolated
+    steady_b[~b_mask] = 0.0
+    
+    # Discharge target is 0V everywhere
+    zero_vals = np.zeros((ny, nx))
+    final_t_off, final_b_off = run_fdtd(steady_t, steady_b, zero_vals, zero_vals, t_mask, b_mask)
+    V_eff_off = np.abs(final_t_off - final_b_off)
 
-        # Re-apply busbars post Neumann
-        V_top_new[top_pos_mask] = top_val_mask[top_pos_mask]
-        V_bot_new[bot_pos_mask] = bot_val_mask[bot_pos_mask]
-
-        V_top, V_bot = V_top_new, V_bot_new
-
-    # Effective potential difference across the PDLC dielectric layer (|V_top - V_bot|)
-    V_effective = np.abs(V_top - V_bot)
-    return V_effective, V_top, V_bot, steps
+    return V_eff_on, V_eff_off, steps
 
 # --- EXECUTE ---
-with st.spinner("Solving multi-layer distributed network..."):
-    V_eff, V_t, V_b, total_steps = simulate_coupled_transients(
+with st.spinner("Calculating Turn-ON and Turn-OFF differential profiles..."):
+    V_on, V_off, total_steps = simulate_on_off_transients(
         c_area, r_sq, film_w, film_l, configured_busbars, v_drive, t_snapshot, resolution, resolution
     )
 
-# --- PLOTTING WITH BUSBAR MARKERS ---
+# --- PLOTTING WITH MARKERS ---
 x_grid = np.linspace(0, film_w, resolution)
 y_grid = np.linspace(0, film_l, resolution)
 
-def add_busbar_traces(fig, layer_filter_name=None):
-    """Adds 3D rectangular strips mapping the configured busbars onto the surface."""
+def add_busbar_traces(fig):
     for i, bb in enumerate(configured_busbars):
-        if layer_filter_name and bb['layer'] != layer_filter_name:
-            continue
-            
         bx = [bb['x_min'], bb['x_max'], bb['x_max'], bb['x_min'], bb['x_min']]
         by = [bb['y_min'], bb['y_min'], bb['y_max'], bb['y_max'], bb['y_min']]
-        # Place a raised marker strip at peak voltage level for visibility
-        bz = [v_drive * 1.02] * 5 
-        
+        bz = [v_drive * 2.05] * 5
         color = "red" if bb['signal'] == 'Positive (+)' else "blue"
-        
-        # Add outline strip
         fig.add_trace(go.Scatter3d(
-            x=bx, y=by, z=bz,
-            mode='lines',
+            x=bx, y=by, z=bz, mode='lines',
             line=dict(color=color, width=6),
             name=f"BB#{i+1} ({bb['layer']} {bb['signal']})"
         ))
@@ -190,29 +183,29 @@ def add_busbar_traces(fig, layer_filter_name=None):
 col1, col2 = st.columns(2)
 
 with col1:
-    fig_eff = go.Figure(data=[go.Surface(z=V_eff, x=x_grid, y=y_grid, colorscale="Inferno")])
-    add_busbar_traces(fig_eff)
-    fig_eff.update_layout(
-        title=f"Effective Dielectric Voltage Drop & Busbars (t = {t_snapshot_us} µs)",
+    fig_on = go.Figure(data=[go.Surface(z=V_on, x=x_grid, y=y_grid, colorscale="Inferno")])
+    add_busbar_traces(fig_on)
+    fig_on.update_layout(
+        title=f"Turn-ON Differential Voltage (t = {t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_drive * 1.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Differential Voltage (V)', zaxis=dict(range=[0, v_drive * 2.1]))
     )
-    st.plotly_chart(fig_eff, use_container_width=True)
+    st.plotly_chart(fig_on, use_container_width=True)
 
 with col2:
-    fig_top = go.Figure(data=[go.Surface(z=V_t, x=x_grid, y=y_grid, colorscale="Viridis")])
-    add_busbar_traces(fig_top, layer_filter_name="Top ITO")
-    fig_top.update_layout(
-        title=f"Top ITO Potential & Top Busbars (t = {t_snapshot_us} µs)",
+    fig_off = go.Figure(data=[go.Surface(z=V_off, x=x_grid, y=y_grid, colorscale="Viridis")])
+    add_busbar_traces(fig_off)
+    fig_off.update_layout(
+        title=f"Turn-OFF Differential Voltage (t = {t_snapshot_us} µs)",
         autosize=True, margin=dict(l=0, r=0, b=0, t=40),
-        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Voltage (V)', zaxis=dict(range=[0, v_drive * 1.1]))
+        scene=dict(xaxis_title='Width (m)', yaxis_title='Length (m)', zaxis_title='Differential Voltage (V)', zaxis=dict(range=[0, v_drive * 2.1]))
     )
-    st.plotly_chart(fig_top, use_container_width=True)
+    st.plotly_chart(fig_off, use_container_width=True)
 
 # --- METRICS ---
 st.divider()
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Active Busbars Configured", len(configured_busbars))
-m2.metric("Center Dielectric Voltage", f"{V_eff[resolution//2, resolution//2]:.2f} V")
-m3.metric("Max Surface Voltage Gradient", f"{np.max(V_eff) - np.min(V_eff):.2f} V")
+m2.metric("Center Turn-ON Voltage", f"{V_on[resolution//2, resolution//2]:.2f} V")
+m3.metric("Center Turn-OFF Voltage", f"{V_off[resolution//2, resolution//2]:.2f} V")
 m4.metric("FDTD Iteration Steps", f"{total_steps:,}")

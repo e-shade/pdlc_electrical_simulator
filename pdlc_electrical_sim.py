@@ -11,7 +11,17 @@ st.markdown("""
     <style>
     .block-container { padding-top: 1rem; }
     [data-testid="stSidebar"] { min-width: 520px !important; }
-    .katex-display { text-align: center !important; }
+    
+    /* Robust CSS rules for centering KaTeX display/block equations */
+    .katex-display {
+        display: block !important;
+        text-align: center !important;
+        margin: 1.2em 0 !important;
+    }
+    .katex-display > .katex {
+        display: inline-block !important;
+        text-align: center !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -37,6 +47,15 @@ if 'busbars' not in st.session_state:
     ]
 
 st.title("⚡ Multi-Busbar PDLC Transient & Steady-State Simulator")
+
+# --- HELP MODAL DIALOG ---
+@st.dialog("📖 Simulator Help & Documentation", width="large")
+def show_help_dialog():
+    if os.path.exists("README.md"):
+        with open("README.md", "r", encoding="utf-8") as f:
+            st.markdown(f.read())
+    else:
+        st.warning("README.md file not found in the application directory.")
 
 # --- COUPLED FDTD SOLVER ---
 def simulate_all_profiles(C_A, R_sq, tape_w_cm, copper_r_sq, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
@@ -163,42 +182,43 @@ with st.sidebar:
             "busbars": st.session_state.busbars
         }
         
-        custom_folder = st.text_input("Folder Name", value="configs")
-        custom_filename = st.text_input("File Name", value="pdlc_config")
+        custom_filename = st.text_input("Configuration File Name", value="pdlc_config")
         
-        clean_filename = custom_filename.strip()
-        if not clean_filename.endswith(".json"):
-            clean_filename += ".json"
-        clean_folder = custom_folder.strip().strip("/")
-        
-        settings_json = json.dumps(current_settings, indent=4)
-        
-        if clean_folder:
-            os.makedirs(clean_folder, exist_ok=True)
-            full_local_path = os.path.join(clean_folder, clean_filename)
-        else:
-            full_local_path = clean_filename
-                
-        if st.button("💾 Save to Disk"):
-            try:
-                with open(full_local_path, "w") as f:
-                    f.write(settings_json)
-                st.success("Saved!")
-            except Exception as e:
-                st.error(f"Failed: {e}")
-                
-        st.download_button(
-            label="⬇️ Download",
-            data=settings_json,
-            file_name=clean_filename,
-            mime="application/json"
-        )
+        config_dir = "config"
+        os.makedirs(config_dir, exist_ok=True)
+
+        if st.button("💾 SAVE TO PRESETS", use_container_width=True):
+            clean_filename = custom_filename.strip()
+            if not clean_filename.endswith(".json"):
+                clean_filename += ".json"
             
-        uploaded_file = st.file_uploader("📂 Load JSON", type=["json"], key="config_uploader", label_visibility="collapsed")
-        if uploaded_file is not None:
-            if st.session_state.get("last_uploaded_file") != uploaded_file.name:
+            file_path = os.path.join(config_dir, clean_filename)
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(current_settings, f, indent=4)
+                    f.flush()
+                    os.fsync(f.fileno())
+                st.session_state.last_loaded_preset = clean_filename
+                st.success(f"Saved & updated `{clean_filename}`!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error saving file: {e}")
+
+        # --- PRESET LIBRARY FROM GITHUB CONFIG FOLDER (Auto-loads on selection) ---
+        st.subheader("📚 Presets")
+        preset_files = [f for f in os.listdir(config_dir) if f.endswith(".json")]
+
+        if preset_files:
+            if "last_loaded_preset" not in st.session_state:
+                st.session_state.last_loaded_preset = None
+
+            selected_preset = st.selectbox("Config Presets", preset_files, key="preset_selectbox", label_visibility="collapsed")
+            
+            if selected_preset and selected_preset != st.session_state.last_loaded_preset:
                 try:
-                    loaded_config = json.load(uploaded_file)
+                    preset_path = os.path.join(config_dir, selected_preset)
+                    with open(preset_path, "r") as f:
+                        loaded_config = json.load(f)
                     
                     st.session_state.width_cm = float(loaded_config.get("width_cm", 60.0))
                     st.session_state.length_cm = float(loaded_config.get("length_cm", 60.0))
@@ -221,11 +241,16 @@ with st.sidebar:
                             st.session_state[f"len_{idx}"] = float(bb.get('length', 10.0))
                             st.session_state[f"sig_{idx}"] = bb.get('signal', 'Positive (+)')
 
-                    st.session_state["last_uploaded_file"] = uploaded_file.name
-                    st.success("Loaded successfully!")
+                    st.session_state.last_loaded_preset = selected_preset
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
+        else:
+            st.caption("No files in `config/`.")
+
+        # --- HELP BUTTON ---
+        if st.button("❓ HELP", use_container_width=True):
+            show_help_dialog()
 
         st.divider()
 
@@ -442,8 +467,8 @@ with col1:
 
 with col2:
     with st.container(border=True):
-        min_off_val = np.min(V_off)
-        st.metric("Min Voltage (Turn-OFF)", f"{min_off_val:.2f} V")
+        max_off_val = np.max(V_off)
+        st.metric("Max Voltage (Turn-OFF)", f"{max_off_val:.2f} V")
         fig_off = create_surface_figure(V_off, "Turn-OFF Differential Voltage RMS", "Viridis")
         st.plotly_chart(fig_off, use_container_width=True)
 
@@ -523,7 +548,7 @@ def compute_transient_metrics_end_time(c_area_val, r_sq_val, w, l, bb_config, vp
             f_t_on, f_b_on = run_steps(np.zeros((ny, nx)), np.zeros((ny, nx)), top_vals, bot_vals, n_steps)
             v_eff_on = np.abs(f_t_on - f_b_on) / np.sqrt(2)
             
-            # Turn-OFF Max Voltage
+            # Turn-OFF Max Voltage (highest voltage remaining across film)
             f_t_off, f_b_off = run_steps(steady_t, steady_b, np.zeros((ny, nx)), np.zeros((ny, nx)), n_steps)
             v_eff_off = np.abs(f_t_off - f_b_off) / np.sqrt(2)
             
@@ -554,7 +579,7 @@ with row2_col2:
     with st.container(border=True):
         st.subheader(f"Transient Response Trajectories (0 to {transient_end_ms} ms)")
         
-        # 4th Plot: Turn-ON Minimum Voltage vs Time (starting at t=0)
+        # 4th Plot: Turn-ON Minimum Voltage vs Time (lowest voltage across film)
         fig_on_curve = go.Figure()
         fig_on_curve.add_trace(go.Scatter(
             x=t_axis, y=min_on_curve, mode='lines+markers', 
@@ -563,7 +588,7 @@ with row2_col2:
         if v_threshold > 0:
             fig_on_curve.add_hline(y=v_threshold, line_dash="dash", line_color="orange", annotation_text=f"Threshold ({v_threshold}V)")
         fig_on_curve.update_layout(
-            title="4. Turn-ON Minimum Voltage vs. Time",
+            title="4. Turn-ON Lowest Voltage Across Film vs. Time",
             xaxis_title="Time (µs)",
             yaxis_title="Min RMS Voltage (V)",
             hovermode="x unified",
@@ -574,7 +599,7 @@ with row2_col2:
         )
         st.plotly_chart(fig_on_curve, use_container_width=True)
 
-        # 5th Plot: Turn-OFF Maximum Voltage vs Time (starting at t=0)
+        # 5th Plot: Turn-OFF Maximum Voltage vs Time (highest voltage across film)
         fig_off_curve = go.Figure()
         fig_off_curve.add_trace(go.Scatter(
             x=t_axis, y=max_off_curve, mode='lines+markers', 
@@ -583,7 +608,7 @@ with row2_col2:
         if v_threshold > 0:
             fig_off_curve.add_hline(y=v_threshold, line_dash="dash", line_color="orange", annotation_text=f"Threshold ({v_threshold}V)")
         fig_off_curve.update_layout(
-            title="5. Turn-OFF Maximum Voltage vs. Time",
+            title="5. Turn-OFF Highest Voltage Across Film vs. Time",
             xaxis_title="Time (µs)",
             yaxis_title="Max RMS Voltage (V)",
             hovermode="x unified",

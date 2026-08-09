@@ -1,0 +1,56 @@
+{
+    "width_cm": 100.0,
+    "length_cm": 100.0,
+    "r_sq": 100.0,
+    "c_area_uf": 11.0,
+    "tape_width_cm": 1.0,
+    "sheet_res_m_ohms": 5.0,
+    "v_rms": 48.0,
+    "v_threshold": 15.0,
+    "busbars": [
+        {
+            "side": "Bottom",
+            "start_pos": 33.0,
+            "length": 1.0,
+            "x_min": 0.33,
+            "x_max": 0.34,
+            "y_min": 0.99,
+            "y_max": 1.0,
+            "layer": "Top ITO",
+            "signal": "Positive (+)"
+        },
+        {
+            "side": "Bottom",
+            "start_pos": 66.0,
+            "length": 1.0,
+            "x_min": 0.66,
+            "x_max": 0.67,
+            "y_min": 0.99,
+            "y_max": 1.0,
+            "layer": "Bottom ITO",
+            "signal": "Negative (-)"
+        },
+        {
+            "side": "Top",
+            "start_pos": 33.0,
+            "length": 1.0,
+            "x_min": 0.33,
+            "x_max": 0.34,
+            "y_min": 0.0,
+            "y_max": 0.01,
+            "layer": "Top ITO",
+            "signal": "Negative (-)"
+        },
+        {
+            "side": "Top",
+            "start_pos": 66.0,
+            "length": 1.0,
+            "x_min": 0.66,
+            "x_max": 0.67,
+            "y_min": 0.0,
+            "y_max": 0.01,
+            "layer": "Bottom ITO",
+            "signal": "Positive (+)"
+        }
+    ]
+}

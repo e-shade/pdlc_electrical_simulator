@@ -35,6 +35,7 @@ defaults = {
     "sheet_res_m_ohms": 5.0,
     "v_rms": 48.0,
     "v_threshold": 15.0,
+    "frequency": 60.0,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -58,7 +59,7 @@ def show_help_dialog():
         st.warning("README.md file not found in the application directory.")
 
 # --- COUPLED FDTD SOLVER ---
-def simulate_all_profiles(C_A, R_sq, tape_w_cm, copper_r_sq, width, length, busbars, V_peak, v_rms_val, t_snap, nx, ny):
+def simulate_all_profiles(C_A, R_sq, tape_w_cm, copper_r_sq, width, length, busbars, V_peak, v_rms_val, freq_val, t_snap, nx, ny):
     dx = width / (nx - 1)
     dy = length / (ny - 1)
     
@@ -141,7 +142,7 @@ def simulate_all_profiles(C_A, R_sq, tape_w_cm, copper_r_sq, width, length, busb
     V_eff_steady = np.abs(steady_t - steady_b) / np.sqrt(2)
 
     total_area = width * length
-    f_driver = 60.0  
+    f_driver = freq_val  
     total_capacitance = C_A * total_area
     reactive_current_rms = 2 * np.pi * f_driver * total_capacitance * v_rms_val
     apparent_power_va = v_rms_val * reactive_current_rms
@@ -179,6 +180,7 @@ with st.sidebar:
             "sheet_res_m_ohms": st.session_state.sheet_res_m_ohms,
             "v_rms": st.session_state.v_rms,
             "v_threshold": st.session_state.v_threshold,
+            "frequency": st.session_state.frequency,
             "busbars": st.session_state.busbars
         }
         
@@ -228,6 +230,7 @@ with st.sidebar:
                     st.session_state.sheet_res_m_ohms = float(loaded_config.get("sheet_res_m_ohms", 5.0))
                     st.session_state.v_rms = float(loaded_config.get("v_rms", 48.0))
                     st.session_state.v_threshold = float(loaded_config.get("v_threshold", 15.0))
+                    st.session_state.frequency = float(loaded_config.get("frequency", 60.0))
                     
                     if "busbars" in loaded_config:
                         st.session_state.busbars = loaded_config["busbars"]
@@ -298,6 +301,7 @@ with st.sidebar:
         
         v_rms = st.slider("Voltage (RMS)", 10.0, 150.0, key="v_rms", step=2.0)
         v_threshold = st.slider("Threshold (V)", 0.0, v_rms, key="v_threshold", step=1.0)
+        frequency = st.slider("Frequency (Hz)", min_value=5.0, max_value=200.0, key="frequency", step=1.0)
 
         v_peak = v_rms * np.sqrt(2)
         st.caption(f"Peak ($V_p$): **{v_peak:.1f} V**")
@@ -382,7 +386,7 @@ with st.sidebar:
 
         # --- EXECUTE SOLVER FOR SIDEBAR POWER CALCULATION ---
         _, _, _, _, active_p_w, _ = simulate_all_profiles(
-            c_area, r_sq, busbar_tape_width_cm, busbar_sheet_res, film_w, film_l, configured_busbars, v_peak, v_rms, t_snapshot, resolution, resolution
+            c_area, r_sq, busbar_tape_width_cm, busbar_sheet_res, film_w, film_l, configured_busbars, v_peak, v_rms, frequency, t_snapshot, resolution, resolution
         )
 
         st.divider()
@@ -391,7 +395,7 @@ with st.sidebar:
 # --- EXECUTE MAIN SOLVER ---
 with st.spinner("Solving transient and steady-state fields..."):
     V_on, V_off, V_steady, total_steps, active_p_w, dc_power_w = simulate_all_profiles(
-        c_area, r_sq, busbar_tape_width_cm, busbar_sheet_res, film_w, film_l, configured_busbars, v_peak, v_rms, t_snapshot, resolution, resolution
+        c_area, r_sq, busbar_tape_width_cm, busbar_sheet_res, film_w, film_l, configured_busbars, v_peak, v_rms, frequency, t_snapshot, resolution, resolution
     )
 
 # --- PLOTTING ---
@@ -474,7 +478,7 @@ with col2:
 
 # --- CACHED TRANSIENT SWEEP STARTING AT t=0 UP TO DYNAMIC END TIME ---
 @st.cache_data
-def compute_transient_metrics_end_time(c_area_val, r_sq_val, w, l, bb_config, vp, v_rms_val, nx, ny, t_end_ms):
+def compute_transient_metrics_end_time(c_area_val, r_sq_val, w, l, bb_config, vp, v_rms_val, freq_val, nx, ny, t_end_ms):
     dx = w / (nx - 1)
     dy = l / (ny - 1)
     
@@ -559,7 +563,7 @@ def compute_transient_metrics_end_time(c_area_val, r_sq_val, w, l, bb_config, vp
 
 with st.spinner("Computing transient metric curves..."):
     t_axis, min_on_curve, max_off_curve = compute_transient_metrics_end_time(
-        c_area, r_sq, film_w, film_l, configured_busbars, v_peak, v_rms, resolution, resolution,
+        c_area, r_sq, film_w, film_l, configured_busbars, v_peak, v_rms, frequency, resolution, resolution,
         transient_end_ms
     )
 
